@@ -52,9 +52,9 @@ LR               = 3e-4
 FEATURES_DIM     = 256
 SAVE_FREQ        = 50_000     # checkpoint interval (env steps, not timesteps)
 
-CHECKPOINT_DIR   = "./checkpoints"
-LOG_DIR          = "./logs"
-BEST_MODEL_DIR   = "./best_model"
+CHECKPOINT_DIR   = "./checkpoints"   # overridable via --checkpoint_dir
+LOG_DIR          = "./logs"           # overridable via --log_dir
+BEST_MODEL_DIR   = "./best_model"     # overridable via --best_model_dir
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -160,9 +160,13 @@ def make_env(rank: int = 0, seed: int = 0):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main(args: argparse.Namespace) -> None:
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    os.makedirs(LOG_DIR,        exist_ok=True)
-    os.makedirs(BEST_MODEL_DIR, exist_ok=True)
+    checkpoint_dir  = args.checkpoint_dir
+    log_dir         = args.log_dir
+    best_model_dir  = args.best_model_dir
+
+    os.makedirs(checkpoint_dir,  exist_ok=True)
+    os.makedirs(log_dir,         exist_ok=True)
+    os.makedirs(best_model_dir,  exist_ok=True)
 
     n_envs = args.n_envs
 
@@ -202,7 +206,7 @@ def main(args: argparse.Namespace) -> None:
         ent_coef        = ENT_COEF,
         learning_rate   = LR,
         policy_kwargs   = policy_kwargs,
-        tensorboard_log = LOG_DIR,
+        tensorboard_log = log_dir,
         verbose         = 1,
         seed            = args.seed,
         device          = args.device,
@@ -215,7 +219,7 @@ def main(args: argparse.Namespace) -> None:
     # ── Callbacks ─────────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
         save_freq         = max(SAVE_FREQ // n_envs, 1),
-        save_path         = CHECKPOINT_DIR,
+        save_path         = checkpoint_dir,
         name_prefix       = "drone_racing_ppo",
         save_replay_buffer = False,
         save_vecnormalize = False,
@@ -224,8 +228,8 @@ def main(args: argparse.Namespace) -> None:
 
     eval_cb = EvalCallback(
         eval_env              = eval_env,
-        best_model_save_path  = BEST_MODEL_DIR,
-        log_path              = LOG_DIR,
+        best_model_save_path  = best_model_dir,
+        log_path              = log_dir,
         eval_freq             = max(SAVE_FREQ // n_envs, 1),
         n_eval_episodes       = 5,
         deterministic         = True,
@@ -248,7 +252,7 @@ def main(args: argparse.Namespace) -> None:
         reset_num_timesteps = not bool(args.resume),
     )
 
-    save_path = os.path.join(CHECKPOINT_DIR, "drone_racing_ppo_final")
+    save_path = os.path.join(checkpoint_dir, "drone_racing_ppo_final")
     model.save(save_path)
     print(f"\n[train] Final model saved to: {save_path}.zip")
 
@@ -281,5 +285,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--resume", type=str, default="",
         help="Path to a .zip checkpoint to resume from (default: none)",
+    )
+    parser.add_argument(
+        "--checkpoint_dir", type=str, default=CHECKPOINT_DIR,
+        help="Where to save periodic checkpoints (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--log_dir", type=str, default=LOG_DIR,
+        help="TensorBoard log directory (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--best_model_dir", type=str, default=BEST_MODEL_DIR,
+        help="Where to save the best model (default: %(default)s)",
     )
     main(parser.parse_args())
