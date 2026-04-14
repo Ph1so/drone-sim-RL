@@ -1,0 +1,8 @@
+gymnasium>=0.29.0
+stable-baselines3>=2.3.0
+numpy>=1.24.0
+torch>=2.0.0
+tensorboard>=2.13.0
+opencv-python>=4.8.0
+# gym-pybullet-drones is not on PyPI — install from source:
+# pip install git+https://github.com/utiasDSL/gym-pybullet-drones.git

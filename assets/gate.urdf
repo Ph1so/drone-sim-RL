@@ -1,0 +1,106 @@
+<?xml version="1.0"?>
+<!--
+  Racing gate URDF.
+
+  Local frame convention (applied BEFORE any world-space pose):
+    - Gate face lies in the XZ plane.
+    - Drone approaches from −Y and exits toward +Y.
+    - Gate right  : +X  (in gate plane, horizontal)
+    - Gate up     : +Z  (in gate plane, vertical)
+    - Gate normal : +Y  (drone exit direction)
+
+  Inner opening: ±0.60 m in local X, ±0.60 m in local Z  →  1.20 × 1.20 m
+  Outer frame  : ±0.70 m                                  →  1.40 × 1.40 m
+  Frame bars   : 0.10 m thick, 0.08 m deep (in Y)
+
+  When loaded via p.loadURDF with orientation euler=[0, 0, yaw]:
+    gate normal in world = R_z(yaw) * [0, 1, 0] = [−sin(yaw), cos(yaw), 0]
+-->
+<robot name="racing_gate">
+
+  <material name="gate_orange">
+    <color rgba="1.0 0.45 0.0 1.0"/>
+  </material>
+  <material name="gate_white">
+    <color rgba="0.95 0.95 0.95 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="2.0"/>
+      <!-- Dummy inertia; gate is loaded with useFixedBase=True -->
+      <inertia ixx="1.0" iyy="1.0" izz="1.0"
+               ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+
+    <!-- ═══════════════════════════════════════
+         BOTTOM HORIZONTAL BAR
+         spans x ∈ [−0.70, +0.70], z = −0.65
+         ═══════════════════════════════════════ -->
+    <visual>
+      <origin xyz="0 0 -0.65" rpy="0 0 0"/>
+      <geometry><box size="1.40 0.08 0.10"/></geometry>
+      <material name="gate_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.65" rpy="0 0 0"/>
+      <geometry><box size="1.40 0.08 0.10"/></geometry>
+    </collision>
+
+    <!-- ═══════════════════════════════════════
+         TOP HORIZONTAL BAR
+         spans x ∈ [−0.70, +0.70], z = +0.65
+         ═══════════════════════════════════════ -->
+    <visual>
+      <origin xyz="0 0 0.65" rpy="0 0 0"/>
+      <geometry><box size="1.40 0.08 0.10"/></geometry>
+      <material name="gate_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.65" rpy="0 0 0"/>
+      <geometry><box size="1.40 0.08 0.10"/></geometry>
+    </collision>
+
+    <!-- ═══════════════════════════════════════
+         LEFT VERTICAL POST
+         spans z ∈ [−0.60, +0.60], x = −0.65
+         (fills gap between the two bars)
+         ═══════════════════════════════════════ -->
+    <visual>
+      <origin xyz="-0.65 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.10 0.08 1.20"/></geometry>
+      <material name="gate_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.65 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.10 0.08 1.20"/></geometry>
+    </collision>
+
+    <!-- ═══════════════════════════════════════
+         RIGHT VERTICAL POST
+         spans z ∈ [−0.60, +0.60], x = +0.65
+         ═══════════════════════════════════════ -->
+    <visual>
+      <origin xyz="0.65 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.10 0.08 1.20"/></geometry>
+      <material name="gate_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0.65 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.10 0.08 1.20"/></geometry>
+    </collision>
+
+    <!-- ═══════════════════════════════════════
+         CENTRE STRIPE (visual only — helps the
+         camera perceive gate depth / centre)
+         ═══════════════════════════════════════ -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="1.20 0.01 0.04"/></geometry>
+      <material name="gate_white"/>
+    </visual>
+
+  </link>
+
+</robot>
