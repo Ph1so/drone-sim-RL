@@ -36,7 +36,7 @@ class RewardComputer:
 
     # ── Reward coefficients ────────────────────────────────────────────
     DIST_SHAPING_SCALE: float = 3.0     # reward per metre gained toward gate
-    HEADING_SCALE:      float = 0.2     # max reward/step when perfectly aligned
+    HEADING_SCALE:      float = 2.0     # max reward/step when perfectly aligned
     GATE_PASS_BONUS:    float = 100.0
     LAP_COMPLETE_BONUS: float = 500.0
     TIME_PENALTY:       float = -0.05   # per step
@@ -62,44 +62,35 @@ class RewardComputer:
         gate_passed: bool,
         collision:   bool,
     ) -> tuple[float, dict]:
-        """
-        Compute the scalar reward for one environment step.
-
-        Returns
-        -------
-        reward : float
-        info   : dict   (diagnostics for logging)
-        """
         reward = 0.0
         info: dict = {}
 
         # 1. Time penalty
         reward += self.TIME_PENALTY
 
-        # 2. Distance shaping (progress toward next gate)
+        # 2. Distance shaping (Progress toward CURRENT target)
         curr_dist = self._gm.dist_to_next(drone_pos)
+        
+        # FIX: If we just passed a gate, dist_delta would be huge negative.
+        # We handle the 'prev_dist' reset inside the gate_passed block below.
         dist_delta = self._prev_dist - curr_dist
         reward += self.DIST_SHAPING_SCALE * dist_delta
         self._prev_dist = curr_dist
-        info["dist_to_gate"]    = round(curr_dist, 4)
-        info["dist_delta"]      = round(dist_delta, 4)
 
-        # 3. Heading alignment (yaw-forward vs direction to next gate)
-        #    Uses the 2-D horizontal projection so altitude differences don't
-        #    penalise a drone that is climbing toward a gate above it.
-        yaw          = drone_rpy[2]
-        drone_fwd    = np.array([np.cos(yaw), np.sin(yaw)])
-        to_gate_2d   = self._gm.current_gate.position[:2] - drone_pos[:2]
-        dist_2d      = np.linalg.norm(to_gate_2d)
+        # 3. Heading alignment
+        yaw = drone_rpy[2]
+        drone_fwd = np.array([np.cos(yaw), np.sin(yaw)])
+        to_gate_2d = self._gm.current_gate.position[:2] - drone_pos[:2]
+        dist_2d = np.linalg.norm(to_gate_2d)
         if dist_2d > 1e-6:
             alignment = float(np.dot(drone_fwd, to_gate_2d / dist_2d))
-            # clamp to [0, 1]: no reward for facing away, max reward dead-on
             reward += self.HEADING_SCALE * max(0.0, alignment)
             info["heading_alignment"] = round(alignment, 4)
 
         # 4. Gate passage bonus
         if gate_passed:
             reward += self.GATE_PASS_BONUS
+            self._prev_dist = self._gm.dist_to_next(drone_pos)
             info["gate_passed"] = True
             if self._gm.lap_complete:
                 reward += self.LAP_COMPLETE_BONUS
