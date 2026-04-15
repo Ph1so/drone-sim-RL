@@ -45,7 +45,7 @@ class RewardComputer:
     LAP_COMPLETE_BONUS:    float = 500.0
     TIME_PENALTY:          float = -0.05  # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # 20° combined roll+pitch
-    TILT_PENALTY_SCALE:    float = -2.0
+    TILT_PENALTY_SCALE:    float = 0 # -2.0
     ANG_VEL_PENALTY_SCALE: float = -0.10  # × ||omega||^2 per step
     COLLISION_PENALTY:     float = -100.0
     OOB_PENALTY:           float = -50.0
