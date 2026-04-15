@@ -36,7 +36,7 @@ class RewardComputer:
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 3.0    # reward per metre gained toward gate
+    DIST_SHAPING_SCALE:    float = 6.0    # reward per metre gained toward gate
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
     HEADING_SCALE:         float = 1.5    # max reward/step at perfect yaw alignment
