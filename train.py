@@ -196,12 +196,21 @@ def main(args: argparse.Namespace) -> None:
     # ── PPO model ─────────────────────────────────────────────────────
     if args.resume:
         print(f"[train] Resuming from checkpoint: {args.resume}")
+        custom_objects = {
+            "policy_kwargs": dict(
+                features_extractor_class  = MultimodalExtractor,
+                features_extractor_kwargs = {"features_dim": FEATURES_DIM},
+                net_arch      = dict(pi=[256, 128], vf=[256, 128]),
+                activation_fn = nn.ReLU,
+            )
+        }
         model = PPO.load(
             args.resume,
             env             = train_env,
             device          = args.device,
             tensorboard_log = log_dir,
             verbose         = 1,
+            custom_objects  = custom_objects,
         )
     else:
         model = PPO(
