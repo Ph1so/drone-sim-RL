@@ -40,7 +40,7 @@ from envs import DroneRacingEnv
 
 # ── Hyper-parameters ──────────────────────────────────────────────────────────
 TOTAL_TIMESTEPS  = 3_000_000
-N_ENVS           = 4          # parallel workers (set 1 if memory-limited)
+N_ENVS           = os.cpu_count() or 4   # parallel workers — defaults to CPU count
 N_STEPS          = 512        # rollout steps per worker per update
 BATCH_SIZE       = 256
 N_EPOCHS         = 10
