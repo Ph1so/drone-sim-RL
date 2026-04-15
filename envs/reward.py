@@ -36,14 +36,14 @@ class RewardComputer:
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 6.0    # reward per metre gained toward gate
+    DIST_SHAPING_SCALE:    float = 12.0   # reward per metre gained toward gate
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
     HEADING_SCALE:         float = 1.5    # max reward/step at perfect yaw alignment
     VEL_GATE_ALIGN_SCALE:  float = 0.5    # max reward/step when velocity || gate normal
     GATE_PASS_BONUS:       float = 100.0
     LAP_COMPLETE_BONUS:    float = 500.0
-    TIME_PENALTY:          float = -0.05  # per step
+    TIME_PENALTY:          float = -0.2   # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # 20° combined roll+pitch
     TILT_PENALTY_SCALE:    float = 0 # -2.0
     ANG_VEL_PENALTY_SCALE: float = -0.10  # × ||omega||^2 per step

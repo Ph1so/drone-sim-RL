@@ -196,13 +196,18 @@ def main(args: argparse.Namespace) -> None:
     # ── PPO model ─────────────────────────────────────────────────────
     if args.resume:
         print(f"[train] Resuming from checkpoint: {args.resume}")
+        # Override hyperparams for pursuit phase:
+        #   - lower LR (5e-5) to avoid shattering stable flight physics
+        #   - ent_coef (0.01) reinjects exploration under the new reward signal
         custom_objects = {
+            "learning_rate": 5e-5,
+            "ent_coef": 0.01,
             "policy_kwargs": dict(
                 features_extractor_class  = MultimodalExtractor,
                 features_extractor_kwargs = {"features_dim": FEATURES_DIM},
                 net_arch      = dict(pi=[256, 128], vf=[256, 128]),
                 activation_fn = nn.ReLU,
-            )
+            ),
         }
         model = PPO.load(
             args.resume,
