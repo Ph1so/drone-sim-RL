@@ -243,11 +243,15 @@ class DroneRacingEnv(BaseAviary):
         gate_passed = self._gate_manager.update(cache["pos"])
         cache["gate_passed"] = gate_passed   # share with terminated/info
 
+        lin_vel = cache["state"][10:13]
+        ang_vel = cache["state"][13:16]
         reward, rinfo = self._reward_computer.compute(
-            drone_pos   = cache["pos"],
-            drone_rpy   = cache["rpy"],
-            gate_passed = gate_passed,
-            collision   = cache["collision"],
+            drone_pos     = cache["pos"],
+            drone_rpy     = cache["rpy"],
+            drone_lin_vel = lin_vel,
+            drone_ang_vel = ang_vel,
+            gate_passed   = gate_passed,
+            collision     = cache["collision"],
         )
         cache["reward_info"] = rinfo
         return reward

@@ -10,6 +10,14 @@ Usage
 The script prints per-episode statistics (total reward, gates passed,
 lap time if completed) and optionally renders to video via PyBullet's
 built-in recorder.
+
+Notes
+-----
+  - Checkpoints saved on a different Python version (e.g. Colab Python 3.12
+    vs local Python 3.10) may fail to deserialise policy_kwargs.  This script
+    passes custom_objects so the correct architecture is always used.
+  - The model is loaded without passing env to PPO.load so SB3 does not wrap
+    the env in VecTransposeImage (which would double-transpose the image obs).
 """
 
 from __future__ import annotations
@@ -18,9 +26,11 @@ import argparse
 import time
 
 import numpy as np
+import torch.nn as nn
 from stable_baselines3 import PPO
 
 from envs import DroneRacingEnv
+from train import MultimodalExtractor, FEATURES_DIM
 
 
 # ── Statistics helper ─────────────────────────────────────────────────────────
@@ -71,14 +81,22 @@ def evaluate(args: argparse.Namespace) -> None:
     print(f"  Render Hz : {args.render_fps} fps")
     print(f"{'='*60}\n")
 
-    # ── Create GUI environment ────────────────────────────────────────
-    env = DroneRacingEnv(
-        gui    = True,
-        record = args.record,
-    )
+    # custom_objects ensures the correct architecture is reconstructed even
+    # when policy_kwargs can't be deserialised (e.g. cross-Python-version
+    # checkpoints saved on Colab Python 3.12 and loaded on Python 3.10).
+    custom_objects = {
+        "policy_kwargs": dict(
+            features_extractor_class  = MultimodalExtractor,
+            features_extractor_kwargs = {"features_dim": FEATURES_DIM},
+            net_arch      = dict(pi=[256, 128], vf=[256, 128]),
+            activation_fn = nn.ReLU,
+        )
+    }
 
-    # ── Load trained policy ───────────────────────────────────────────
-    model = PPO.load(args.model, env=env, device="cpu")
+    # Load model WITHOUT passing env so SB3 does not wrap it.
+    # We use the raw DroneRacingEnv directly in the loop; the
+    # MultimodalExtractor's internal permute handles HWC→CHW correctly.
+    model = PPO.load(args.model, device="cpu", custom_objects=custom_objects)
     print(f"[evaluate] Policy loaded from: {args.model}\n")
 
     step_sleep = 1.0 / args.render_fps
@@ -87,11 +105,14 @@ def evaluate(args: argparse.Namespace) -> None:
     all_gates_passed: list[int]   = []
     laps_completed    = 0
 
+    # Single env for all episodes — the window stays open the whole time.
+    env = DroneRacingEnv(gui=True, record=args.record)
+
     # ── Episode loop ──────────────────────────────────────────────────
     for ep in range(1, args.episodes + 1):
         obs, _info = env.reset()
-        stats      = EpisodeStats(ep_num=ep)
-        done       = False
+        stats = EpisodeStats(ep_num=ep)
+        done  = False
 
         while not done:
             action, _states = model.predict(obs, deterministic=True)
@@ -106,6 +127,8 @@ def evaluate(args: argparse.Namespace) -> None:
         if stats.lap_complete:
             laps_completed += 1
 
+    env.close()
+
     # ── Aggregate summary ─────────────────────────────────────────────
     n = args.episodes
     print(f"\n{'='*60}")
@@ -114,8 +137,6 @@ def evaluate(args: argparse.Namespace) -> None:
     print(f"    Mean gates passed  : {np.mean(all_gates_passed):.2f} / 5")
     print(f"    Laps completed     : {laps_completed} / {n}  ({100*laps_completed/n:.0f}%)")
     print(f"{'='*60}\n")
-
-    env.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -194,27 +194,33 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # ── PPO model ─────────────────────────────────────────────────────
-    model = PPO(
-        policy          = "MultiInputPolicy",
-        env             = train_env,
-        n_steps         = N_STEPS,
-        batch_size      = BATCH_SIZE,
-        n_epochs        = N_EPOCHS,
-        gamma           = GAMMA,
-        gae_lambda      = GAE_LAMBDA,
-        clip_range      = CLIP_RANGE,
-        ent_coef        = ENT_COEF,
-        learning_rate   = LR,
-        policy_kwargs   = policy_kwargs,
-        tensorboard_log = log_dir,
-        verbose         = 1,
-        seed            = args.seed,
-        device          = args.device,
-    )
-
     if args.resume:
-        print(f"[train] Resuming weights from: {args.resume}")
-        model.set_parameters(args.resume)
+        print(f"[train] Resuming from checkpoint: {args.resume}")
+        model = PPO.load(
+            args.resume,
+            env             = train_env,
+            device          = args.device,
+            tensorboard_log = log_dir,
+            verbose         = 1,
+        )
+    else:
+        model = PPO(
+            policy          = "MultiInputPolicy",
+            env             = train_env,
+            n_steps         = N_STEPS,
+            batch_size      = BATCH_SIZE,
+            n_epochs        = N_EPOCHS,
+            gamma           = GAMMA,
+            gae_lambda      = GAE_LAMBDA,
+            clip_range      = CLIP_RANGE,
+            ent_coef        = ENT_COEF,
+            learning_rate   = LR,
+            policy_kwargs   = policy_kwargs,
+            tensorboard_log = log_dir,
+            verbose         = 1,
+            seed            = args.seed,
+            device          = args.device,
+        )
 
     # ── Callbacks ─────────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
