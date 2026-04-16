@@ -154,7 +154,7 @@ class DroneRacingEnv(BaseAviary):
 
         # Initialise reward computer's distance baseline.
         drone_pos = self._getDroneStateVector(0)[0:3]
-        self._reward_computer.reset(drone_pos)
+        self._reward_computer.reset()
 
         return obs, info
 

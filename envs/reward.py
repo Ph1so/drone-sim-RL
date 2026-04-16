@@ -3,17 +3,17 @@ RewardComputer — modular reward shaping for the drone racing task.
 
 Reward components
 -----------------
-1.  Distance shaping      : proportional to reduction in distance to next gate
-2.  Proximity bonus       : smooth ramp reward inside 1.5 m of gate centre
-3.  Heading alignment     : yaw-forward dot-product vs direction to next gate
-4.  Velocity-gate align   : velocity direction dot-product vs gate normal
-5.  Gate bonus            : large one-off reward on clean gate passage
-6.  Time penalty          : small negative reward per step (encourages speed)
-7.  Tilt penalty          : negative reward for excessive roll / pitch
-8.  Angular vel penalty   : quadratic penalty on angular velocity magnitude
-9.  Collision penalty     : large negative reward + episode ends
-10. Out-of-bounds         : medium negative reward + episode ends
-11. Lap completion        : bonus on completing all gates
+1.  Velocity-based progress : dot(lin_vel, unit_vec_to_gate) — zero when hovering
+2.  Proximity bonus         : smooth ramp reward inside 1.5 m of gate centre
+3.  Heading alignment       : yaw-forward dot-product vs direction to next gate
+4.  Velocity-gate align     : velocity direction dot-product vs gate normal
+5.  Gate bonus              : large one-off reward on clean gate passage
+6.  Time penalty            : small negative reward per step (encourages speed)
+7.  Tilt penalty            : negative reward for excessive roll / pitch
+8.  Angular vel penalty     : quadratic penalty on angular velocity magnitude
+9.  Collision penalty       : large negative reward + episode ends
+10. Out-of-bounds           : medium negative reward + episode ends
+11. Lap completion          : bonus on completing all gates
 """
 
 from __future__ import annotations
@@ -30,34 +30,34 @@ WORLD_BOUNDS = np.array([-3.0, -3.0, 0.05, 12.0, 10.0, 6.0], dtype=np.float64)
 
 class RewardComputer:
     """
-    Stateful reward calculator (holds previous distance for shaping).
+    Stateless reward calculator — no previous-distance bookkeeping needed
+    because progress is measured via velocity projection, not dist_delta.
 
     Must call :meth:`reset` at the start of every episode.
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 12.0   # reward per metre gained toward gate
+    DIST_SHAPING_SCALE:    float = 12.0   # reward per m/s toward gate
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
-    HEADING_SCALE:         float = 1.5    # max reward/step at perfect yaw alignment
+    HEADING_SCALE:         float = 0.2    # max reward/step at perfect yaw alignment
     VEL_GATE_ALIGN_SCALE:  float = 0.5    # max reward/step when velocity || gate normal
-    GATE_PASS_BONUS:       float = 100.0
+    GATE_PASS_BONUS:       float = 200.0
     LAP_COMPLETE_BONUS:    float = 500.0
     TIME_PENALTY:          float = -0.2   # per step
-    TILT_THRESHOLD:        float = np.deg2rad(45)  # 20° combined roll+pitch
-    TILT_PENALTY_SCALE:    float = 0 # -2.0
+    TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
+    TILT_PENALTY_SCALE:    float = 0      # -2.0
     ANG_VEL_PENALTY_SCALE: float = -0.10  # × ||omega||^2 per step
     COLLISION_PENALTY:     float = -100.0
     OOB_PENALTY:           float = -50.0
 
     def __init__(self, gate_manager: GateManager) -> None:
-        self._gm               = gate_manager
-        self._prev_dist: float = 0.0
+        self._gm = gate_manager
 
     # ------------------------------------------------------------------
-    def reset(self, drone_pos: np.ndarray) -> None:
-        """Initialise distance baseline at episode start."""
-        self._prev_dist = self._gm.dist_to_next(drone_pos)
+    def reset(self) -> None:
+        """No-op — velocity-based shaping requires no per-episode state."""
+        pass
 
     # ------------------------------------------------------------------
     def compute(
@@ -75,13 +75,18 @@ class RewardComputer:
         # 1. Time penalty
         reward += self.TIME_PENALTY
 
-        # 2. Distance shaping (progress toward current target gate)
-        curr_dist  = self._gm.dist_to_next(drone_pos)
-        dist_delta = self._prev_dist - curr_dist
-        reward    += self.DIST_SHAPING_SCALE * dist_delta
-        self._prev_dist = curr_dist
+        # 2. Velocity-based progress toward next gate.
+        #    dot(lin_vel, gate_unit) > 0  → flying toward gate  (reward)
+        #                             = 0  → hovering            (zero shaping)
+        #                             < 0  → flying away         (penalty)
+        #    A stationary drone earns nothing here, breaking the hover optimum.
+        curr_dist = self._gm.dist_to_next(drone_pos)
         info["dist_to_gate"] = round(curr_dist, 4)
-        info["dist_delta"]   = round(dist_delta, 4)
+        if curr_dist > 1e-6:
+            gate_unit = (self._gm.current_gate.position - drone_pos) / curr_dist
+            progress  = float(np.dot(drone_lin_vel, gate_unit))
+            reward   += self.DIST_SHAPING_SCALE * progress
+            info["vel_progress"] = round(progress, 4)
 
         # 2b. Proximity bonus — smooth ramp into the sparse gate bonus
         if curr_dist < self.PROXIMITY_RADIUS:
@@ -89,7 +94,8 @@ class RewardComputer:
             reward += prox
             info["proximity_bonus"] = round(prox, 4)
 
-        # 3. Heading alignment (yaw-forward vs 2-D direction to gate)
+        # 3. Heading alignment (yaw-forward vs 2-D direction to gate).
+        #    Kept small (0.2) so the agent cannot farm reward by just facing the gate.
         yaw        = drone_rpy[2]
         drone_fwd  = np.array([np.cos(yaw), np.sin(yaw)])
         to_gate_2d = self._gm.current_gate.position[:2] - drone_pos[:2]
@@ -111,7 +117,6 @@ class RewardComputer:
         # 4. Gate passage bonus
         if gate_passed:
             reward += self.GATE_PASS_BONUS
-            self._prev_dist = self._gm.dist_to_next(drone_pos)
             info["gate_passed"] = True
             if self._gm.lap_complete:
                 reward += self.LAP_COMPLETE_BONUS
