@@ -90,17 +90,20 @@ Dict{
 }
 ```
 
-`gate_obs` components — all in the drone's yaw-rotated body frame:
+`gate_obs` is a 10-float vector: `[current_gate(5), next_gate(5)]`, all in the drone's yaw frame.
 
 | Index | Name | Description |
 |-------|------|-------------|
-| 0 | `rel_x` | Distance to next gate along drone forward axis (m) |
-| 1 | `rel_y` | Distance to next gate along drone left axis (m) |
-| 2 | `rel_z` | Vertical offset to next gate center (m, + = above) |
-| 3 | `dist` | Euclidean distance to next gate (m) |
-| 4 | `gate_yaw_err` | Signed angle from drone heading to gate normal (rad) |
+| 0 | `curr_rel_x` | Current gate offset along drone forward axis (m) |
+| 1 | `curr_rel_y` | Current gate offset along drone left axis (m) |
+| 2 | `curr_rel_z` | Vertical offset to current gate center (m) |
+| 3 | `curr_dist` | Euclidean distance to current gate (m) |
+| 4 | `curr_yaw_err` | Signed angle from drone heading to gate normal (rad) |
+| 5–9 | `next_*` | Same 5 fields for the gate after the current one |
 
-Gaussian noise (σ=0.3 m on position, σ=0.05 rad on heading) is injected at every step to simulate CV estimation uncertainty. Configurable via `DroneRacingEnv(gate_noise_std=...)`.
+The `next_*` slice is all zeros when the current gate is the last active gate (no lookahead needed).
+
+Noise is **distance-scaled**: σ = `gate_noise_std × max(dist / 3.0, 0.2)`. Farther gates are noisier, closer gates are cleaner — matching real CV detector behavior. Configurable via `DroneRacingEnv(gate_noise_std=...)`.
 
 > **No raw pixels are passed to the policy.** `_render_ego_camera()` is retained in the env for visualization and future CV pipeline integration.
 
@@ -122,15 +125,22 @@ Five gates on an oval-ish lap. The drone spawns at `[0, 0, 0.3]` facing `+Y`.
 
 ### Reward Components
 
-| Component        | Value                                      |
-|------------------|--------------------------------------------|
-| Distance shaping | `+3.0 × Δdist_to_gate` per step           |
-| Gate passage     | `+100` one-off                             |
-| Lap completion   | additional `+500`                          |
-| Time penalty     | `−0.05` per step                           |
-| Tilt penalty     | `−1.0 × (tilt − 45°)` when over threshold |
-| Collision        | `−100` + episode ends                      |
-| Out-of-bounds    | `−50` + episode ends                       |
+| Component | Value |
+|---|---|
+| Velocity progress | `12.0 × tanh(dot(vel, gate_unit) / 2.0)` — saturates at ±12, no catapult incentive |
+| Proximity bonus | up to `+0.5/step` inside 1.5 m of gate |
+| Heading alignment | up to `+0.2/step` at perfect yaw alignment |
+| Velocity-gate alignment | up to `+1.0/step` when flying through gate correctly |
+| Gate passage (escalating) | `80 × gates_cleared` (gate 1=80, gate 2=160, …, gate 5=400) |
+| Lap completion | additional `+500` |
+| Time penalty | `−0.1/step` |
+| Tilt penalty | `−0.5 × (tilt − 45°)` when over threshold |
+| Angular velocity | `−0.02 × ‖ω‖²/step` |
+| Altitude alignment | `−0.4 × |drone_z − gate_z|/step` |
+| Collision | `−100` + episode ends |
+| Out-of-bounds | `−50` + episode ends |
+
+Gate 1 bonus (80) < crash penalty (100): a catapult-and-crash strategy is net-negative by design.
 
 ### Training Architecture
 
@@ -170,19 +180,28 @@ To deploy on the competition sim:
 ### train.py
 
 ```
---timesteps INT   Total environment timesteps          (default: 3_000_000)
---n_envs    INT   Number of parallel environments      (default: 4)
---seed      INT   Random seed                          (default: 42)
---device    STR   auto | cpu | cuda | mps              (default: auto)
---resume    STR   Path to a .zip checkpoint to resume  (default: none)
+--timesteps INT   Total environment timesteps               (default: 3_000_000)
+--n_envs    INT   Number of parallel environments           (default: cpu_count)
+--seed      INT   Random seed                               (default: 42)
+--device    STR   auto | cpu | cuda | mps                   (default: auto)
+--resume    STR   Path to a .zip checkpoint to resume       (default: none)
+--num_gates INT   Active gates for curriculum training 1–5  (default: 5)
+```
+
+Curriculum workflow:
+```bash
+python train.py --num_gates 1 --timesteps 1_000_000   # master gate 1 first
+python train.py --num_gates 3 --timesteps 2_000_000   # extend to 3 gates
+python train.py --num_gates 5 --timesteps 3_000_000   # full course
 ```
 
 ### evaluate.py
 
 ```
---model      STR   Path to saved .zip policy           (default: ./best_model/best_model.zip)
---episodes   INT   Number of evaluation episodes       (default: 5)
---render_fps INT   Rendering pace in fps               (default: 48)
+--model      STR   Path to saved .zip policy                (default: ./best_model/best_model.zip)
+--episodes   INT   Number of evaluation episodes            (default: 5)
+--render_fps INT   Rendering pace in fps                    (default: 48)
+--num_gates  INT   Active gates (match training config)     (default: 5)
 --record         Record PyBullet GUI to video frames
 ```
 # drone-sim-RL

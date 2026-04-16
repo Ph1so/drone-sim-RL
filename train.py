@@ -35,6 +35,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from envs import DroneRacingEnv
+from envs.gate_manager import RACE_GATES
 
 
 # ── Hyper-parameters ──────────────────────────────────────────────────────────
@@ -126,10 +127,10 @@ class GateObsExtractor(BaseFeaturesExtractor):
 # Environment factory
 # ══════════════════════════════════════════════════════════════════════════════
 
-def make_env(rank: int = 0, seed: int = 0):
+def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5):
     """Return a callable that creates a single DroneRacingEnv."""
     def _init():
-        env = DroneRacingEnv(gui=False)
+        env = DroneRacingEnv(gui=False, num_gates=num_gates)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -150,19 +151,21 @@ def main(args: argparse.Namespace) -> None:
 
     n_envs = args.n_envs
 
+    num_gates = args.num_gates
+
     # ── Vectorised training environments ─────────────────────────────
     if n_envs > 1:
         train_env = SubprocVecEnv(
-            [make_env(rank=i, seed=args.seed) for i in range(n_envs)]
+            [make_env(rank=i, seed=args.seed, num_gates=num_gates) for i in range(n_envs)]
         )
     else:
         from stable_baselines3.common.vec_env import DummyVecEnv
-        train_env = DummyVecEnv([make_env(rank=0, seed=args.seed)])
+        train_env = DummyVecEnv([make_env(rank=0, seed=args.seed, num_gates=num_gates)])
 
     train_env = VecMonitor(train_env)
 
     # ── Evaluation environment (single, deterministic) ───────────────
-    eval_env = DroneRacingEnv(gui=False)
+    eval_env = DroneRacingEnv(gui=False, num_gates=num_gates)
 
     # ── Policy kwargs with custom extractor ──────────────────────────
     policy_kwargs = dict(
@@ -242,6 +245,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  DroneRacing PPO training")
     print(f"  Total timesteps : {args.timesteps:,}")
     print(f"  Parallel envs   : {n_envs}")
+    print(f"  Active gates    : {num_gates} / {len(RACE_GATES)}")
     print(f"  Device          : {args.device}")
     print(f"{'='*60}\n")
 
@@ -297,5 +301,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--best_model_dir", type=str, default=BEST_MODEL_DIR,
         help="Where to save the best model (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--num_gates", type=int, default=5,
+        help="Number of active gates for curriculum training (1–5, default: %(default)s)",
     )
     main(parser.parse_args())

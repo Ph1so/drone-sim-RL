@@ -143,17 +143,24 @@ class GateManager:
     """
     Manages sequential gate passing for a single episode.
 
+    Parameters
+    ----------
+    num_gates : int
+        Number of gates to include from the start of RACE_GATES (1–5).
+        Use values < 5 for curriculum training (e.g. ``--num_gates 1``).
+
     Usage::
 
-        gm = GateManager()          # fresh copy of RACE_GATES
-        gm.load_gates(client, urdf) # load URDFs into PyBullet
+        gm = GateManager(num_gates=2)   # curriculum: first 2 gates only
+        gm.load_gates(client, urdf)     # load URDFs into PyBullet
         ...
-        passed = gm.update(pos)     # call every step
+        passed = gm.update(pos)         # call every step
         dist   = gm.dist_to_next(pos)
     """
 
-    def __init__(self) -> None:
-        self.gates: List[Gate] = [copy.deepcopy(g) for g in RACE_GATES]
+    def __init__(self, num_gates: int = 5) -> None:
+        self._n_gates = min(max(num_gates, 1), len(RACE_GATES))
+        self.gates: List[Gate] = [copy.deepcopy(g) for g in RACE_GATES[:self._n_gates]]
         self._idx:  int  = 0
         self.num_passed:   int  = 0
         self.lap_complete: bool = False
@@ -171,6 +178,13 @@ class GateManager:
     @property
     def current_gate_idx(self) -> int:
         return self._idx
+
+    @property
+    def next_gate(self) -> Optional[Gate]:
+        """Gate after the current target, or None if current is the last."""
+        if self._idx + 1 >= len(self.gates):
+            return None
+        return self.gates[self._idx + 1]
 
     # ------------------------------------------------------------------
     def dist_to_next(self, drone_pos: np.ndarray) -> float:
@@ -201,7 +215,7 @@ class GateManager:
     # ------------------------------------------------------------------
     def reset(self) -> None:
         """Reset all gates and counters for a new episode."""
-        self.gates        = [copy.deepcopy(g) for g in RACE_GATES]
+        self.gates        = [copy.deepcopy(g) for g in RACE_GATES[:self._n_gates]]
         self._idx         = 0
         self.num_passed   = 0
         self.lap_complete = False

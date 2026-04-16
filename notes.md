@@ -2,6 +2,63 @@
 
 ---
 
+## 2026-04-16 — Fix catapult-and-crash behavior (5 targeted changes)
+
+### Problem
+After the gate_obs architecture overhaul, the agent developed a "catapult and crash" policy:
+it launched at maximum velocity toward gate 1, cleared it, then immediately crashed. Root
+causes identified through analysis:
+1. Unbounded linear velocity reward → maximum thrust always optimal
+2. Policy had no lookahead past the current gate; gate transition was a hard discontinuity
+3. Gate 1 bonus (200) > crash penalty (100) → catapult-and-crash was a profitable strategy
+4. Fixed positional noise was too large at high velocity / close range
+5. Policy never visited post-gate-1 states → value function garbage beyond gate 1
+
+### Changes
+
+**Fix 1 — Saturate velocity reward (`envs/reward.py`)**
+- Replaced `12.0 × progress` with `12.0 × tanh(progress / 2.0)`
+- Reward now saturates at ±12 rather than growing without bound
+- Marginal reward for going faster than ~2 m/s is near-zero → catapult no longer optimal
+
+**Fix 2 — Add next gate to observation (`envs/drone_racing_env.py`)**
+- `gate_obs` extended from 5 → 10 floats: `[current_gate(5), next_gate(5)]`
+- Agent can now perceive that gate 2 is around a corner before it reaches gate 1
+- Gate transition discontinuity eliminated — next gate obs is already visible pre-transition
+- `next_*` slice is zeros when current gate is the last active gate (clean sentinel)
+
+**Fix 3 — Curriculum training (`envs/gate_manager.py`, `envs/drone_racing_env.py`, `train.py`, `evaluate.py`)**
+- `GateManager` now accepts `num_gates` (1–5); only activates the first N gates
+- `DroneRacingEnv` gains `num_gates` param, propagated to `GateManager`
+- `train.py` and `evaluate.py` gain `--num_gates` CLI arg
+- Workflow: train on 1 gate first → expand to 3 → full 5-gate course
+- Forces post-gate states to be explored from the start
+
+**Fix 4 — Distance-scaled noise (`envs/drone_racing_env.py`)**
+- Positional noise now scales with true gate distance: σ = `gate_noise_std × max(dist/3.0, 0.2)`
+- Farther gates → more noise (realistic CV behavior); closer gates → cleaner signal
+- Prevents noise from being catastrophically large at high speed / close range
+- Angular noise (σ=0.05 rad) unchanged
+
+**Fix 5 — Escalating gate bonus (`envs/reward.py`)**
+- Replaced flat `GATE_PASS_BONUS = 200` with `GATE_BASE_BONUS × num_gates_cleared`
+- Gate 1 = 80, Gate 2 = 160, Gate 3 = 240, Gate 4 = 320, Gate 5 = 400
+- Gate 1 bonus (80) < crash penalty (100) → catapult-and-crash is now net-negative
+- Multi-gate sequences are substantially more valuable than crashing after gate 1
+
+### Why
+Catapult behavior was a locally optimal policy given the old reward structure. All five changes
+together redefine what "optimal" looks like: the agent must fly at controlled speed, maintain
+stability through gate transitions, and string multiple gates together to maximize return.
+
+### Expected outcome
+- Catapult strategy becomes unprofitable (net negative with gate 1 only)
+- Curriculum (start with `--num_gates 1`) bootstraps stable single-gate flight before adding complexity
+- Lookahead obs prevents the hard transition discontinuity that caused post-gate crashes
+- Training from scratch required — architecture and observation space changed again
+
+---
+
 ## 2026-04-16 — Architecture overhaul: image obs → noisy gate obs
 
 ### Changes

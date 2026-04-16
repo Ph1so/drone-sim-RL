@@ -11,10 +11,12 @@ Mapped to per-motor RPMs via a classical quadrotor mixer.
 Observation space
 -----------------
 Dict{
-  "telemetry" : Box(13,) — [pos(3), quat(4), lin_vel(3), ang_vel(3)]
-  "gate_obs"  : Box(5,)  — noisy gate-relative observation (see _compute_gate_obs)
-                           [rel_x, rel_y, rel_z, dist, gate_yaw_err]
-                           expressed in the drone's yaw frame with Gaussian noise
+  "telemetry" : Box(13,)  — [pos(3), quat(4), lin_vel(3), ang_vel(3)]
+  "gate_obs"  : Box(10,)  — noisy gate-relative observation (see _compute_gate_obs)
+                            [curr_rel_x, curr_rel_y, curr_rel_z, curr_dist, curr_yaw_err,
+                             next_rel_x, next_rel_y, next_rel_z, next_dist, next_yaw_err]
+                            expressed in the drone's yaw frame with distance-scaled noise.
+                            next_* is zeroed when current gate is the last on the course.
 }
 
 Reward / termination
@@ -22,14 +24,14 @@ Reward / termination
 See reward.py for the detailed shaping.  Episode ends on:
   • Collision with any object
   • Leaving the world-bounds box
-  • Completing all gates (success)
+  • Completing all active gates (success)
   • Exceeding MAX_EPISODE_STEPS (truncation)
 
 Modular perception note
 -----------------------
 _render_ego_camera() is kept but not used in _computeObs().  At competition time,
-replace the GateManager-based gate position with estimates from a CV pipeline that
-produces the same 5-float gate_obs format — the policy requires no changes.
+replace the GateManager-based gate positions with estimates from a CV pipeline that
+produces the same 10-float gate_obs format — the policy requires no changes.
 """
 
 from __future__ import annotations
@@ -94,13 +96,14 @@ class DroneRacingEnv(BaseAviary):
         ctrl_freq:      int = 48,
         record:         bool = False,
         gate_noise_std: float = 0.3,
+        num_gates:      int = 5,
     ) -> None:
         self._img_h, self._img_w = img_size
         self._gate_noise_std = gate_noise_std
 
         # GateManager and RewardComputer are created before super().__init__
         # because BaseAviary.__init__ calls _addObstacles() internally.
-        self._gate_manager   = GateManager()
+        self._gate_manager   = GateManager(num_gates=num_gates)
         self._reward_computer = RewardComputer(self._gate_manager)
 
         # Per-step cache (populated once, read by reward/term/info methods)
@@ -141,13 +144,14 @@ class DroneRacingEnv(BaseAviary):
                 shape = (13,),
                 dtype = np.float32,
             ),
-            # 5-D gate-relative obs in drone yaw frame (with injected noise).
-            # Swap source: replace GateManager lookup with CV pipeline estimates
+            # 10-D gate-relative obs: [current_gate(5), next_gate(5)] in drone yaw frame.
+            # next_gate slice is zeros when current gate is the last active gate.
+            # Swap source: replace GateManager lookups with CV pipeline estimates
             # at competition time — policy interface stays identical.
             "gate_obs": spaces.Box(
                 low   = -np.inf,
                 high  =  np.inf,
-                shape = (5,),
+                shape = (10,),
                 dtype = np.float32,
             ),
         })
@@ -333,6 +337,58 @@ class DroneRacingEnv(BaseAviary):
                 return True
         return False
 
+    # ── Noise scaling constants ────────────────────────────────────────
+    _NOISE_DIST_REF:  float = 3.0   # m — distance at which noise == gate_noise_std
+    _MIN_NOISE_RATIO: float = 0.2   # floor: noise never drops below 20% of nominal
+
+    # ------------------------------------------------------------------
+    def _single_gate_obs(
+        self,
+        gate,
+        pos: np.ndarray,
+        rpy: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Compute a noisy 5-D relative observation for one gate in the drone's yaw frame.
+
+        Format: [rel_x, rel_y, rel_z, dist, gate_yaw_err]
+
+        rel_x / rel_y : offset to gate centre along drone forward / left axes
+        rel_z         : vertical offset (positive = gate above drone)
+        dist          : euclidean distance derived from the noisy offset
+        gate_yaw_err  : signed angle (rad) from drone heading to gate normal
+
+        Noise is scaled with true distance: farther gates are noisier, mimicking
+        how a real CV detector has more uncertainty at longer range.
+        """
+        rel_world  = gate.position - pos                        # (3,) world frame
+        true_dist  = float(np.linalg.norm(rel_world))
+
+        # ── Distance-scaled position noise ───────────────────────────
+        noise_scale  = max(true_dist / self._NOISE_DIST_REF, self._MIN_NOISE_RATIO)
+        effective_std = self._gate_noise_std * noise_scale
+        noise_xyz    = self.np_random.normal(0.0, effective_std, size=3).astype(np.float64)
+        rel_noisy    = rel_world + noise_xyz
+
+        dist = float(np.linalg.norm(rel_noisy))
+
+        # ── Project into drone yaw frame ──────────────────────────────
+        yaw = float(rpy[2])
+        c, s  = np.cos(yaw), np.sin(yaw)
+        rel_x = float( c * rel_noisy[0] + s * rel_noisy[1])
+        rel_y = float(-s * rel_noisy[0] + c * rel_noisy[1])
+        rel_z = float(rel_noisy[2])
+
+        # ── Gate heading error (fixed small angular noise) ────────────
+        drone_fwd    = np.array([c, s])
+        gate_n_2d    = gate.normal[:2]
+        cross        = float(drone_fwd[0] * gate_n_2d[1] - drone_fwd[1] * gate_n_2d[0])
+        dot          = float(np.dot(drone_fwd, gate_n_2d))
+        gate_yaw_err = float(np.arctan2(cross, dot))
+        gate_yaw_err += float(self.np_random.normal(0.0, 0.05))
+
+        return np.array([rel_x, rel_y, rel_z, dist, gate_yaw_err], dtype=np.float32)
+
     # ------------------------------------------------------------------
     def _compute_gate_obs(
         self,
@@ -340,62 +396,25 @@ class DroneRacingEnv(BaseAviary):
         rpy: np.ndarray,
     ) -> np.ndarray:
         """
-        Return a noisy 5-D gate observation expressed in the drone's yaw frame.
+        Return a noisy 10-D gate observation: [current_gate(5), next_gate(5)].
 
-        Format
-        ------
-        [rel_x, rel_y, rel_z, dist, gate_yaw_err]
-
-        rel_x / rel_y : position of next gate relative to drone projected onto
-                        the drone's forward / left axes (yaw frame, XY-plane)
-        rel_z         : vertical offset (world Z, positive = gate above drone)
-        dist          : euclidean distance derived from the noisy offset
-        gate_yaw_err  : signed angle (rad) from drone heading to gate normal,
-                        positive = gate normal is to the left of drone heading
-
-        Noise
-        -----
-        Gaussian noise σ=gate_noise_std is added to the 3-D world offset before
-        projection.  A small angular noise (σ=0.05 rad ≈ 3°) is added to the
-        yaw error.  This mimics realistic CV estimation uncertainty and prevents
-        the policy from relying on perfect gate information.
+        The next-gate slice is all zeros when the current gate is the last active
+        gate on the curriculum course (sentinel that no further gate exists).
 
         Swap note
         ---------
-        At competition time replace the GateManager lookup with CV pipeline
-        estimates in the same [rel_x, rel_y, rel_z, dist, gate_yaw_err] format.
-        The policy requires no changes.
+        At competition time replace GateManager lookups with CV pipeline estimates
+        in the same format.  The policy requires no changes.
         """
-        gate      = self._gate_manager.current_gate
-        rel_world = gate.position - pos                      # (3,) world frame
+        curr_obs = self._single_gate_obs(self._gate_manager.current_gate, pos, rpy)
 
-        # ── Inject position noise ─────────────────────────────────────
-        noise_xyz = self.np_random.normal(
-            0.0, self._gate_noise_std, size=3
-        ).astype(np.float64)
-        rel_noisy = rel_world + noise_xyz
+        next_gate = self._gate_manager.next_gate
+        if next_gate is not None:
+            next_obs = self._single_gate_obs(next_gate, pos, rpy)
+        else:
+            next_obs = np.zeros(5, dtype=np.float32)
 
-        dist = float(np.linalg.norm(rel_noisy))
-
-        # ── Project into drone yaw frame ──────────────────────────────
-        yaw = float(rpy[2])
-        c, s  = np.cos(yaw), np.sin(yaw)
-        # forward = [c, s, 0],  left = [-s, c, 0]
-        rel_x = float( c * rel_noisy[0] + s * rel_noisy[1])
-        rel_y = float(-s * rel_noisy[0] + c * rel_noisy[1])
-        rel_z = float(rel_noisy[2])
-
-        # ── Gate heading error ────────────────────────────────────────
-        drone_fwd = np.array([c, s])
-        gate_n_2d = gate.normal[:2]                          # already unit vec
-        cross = float(drone_fwd[0] * gate_n_2d[1] - drone_fwd[1] * gate_n_2d[0])
-        dot   = float(np.dot(drone_fwd, gate_n_2d))
-        gate_yaw_err = float(np.arctan2(cross, dot))
-        gate_yaw_err += float(self.np_random.normal(0.0, 0.05))
-
-        return np.array(
-            [rel_x, rel_y, rel_z, dist, gate_yaw_err], dtype=np.float32
-        )
+        return np.concatenate([curr_obs, next_obs])  # (10,)
 
     # ------------------------------------------------------------------
     def _render_ego_camera(

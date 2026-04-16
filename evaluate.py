@@ -161,7 +161,7 @@ def evaluate(args: argparse.Namespace) -> None:
     laps_completed    = 0
 
     # Single env for all episodes — the window stays open the whole time.
-    env = DroneRacingEnv(gui=True, record=args.record)
+    env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates)
 
     # ── Episode loop ──────────────────────────────────────────────────
     for ep in range(1, args.episodes + 1):
@@ -226,5 +226,11 @@ if __name__ == "__main__":
         action  = "store_true",
         default = False,
         help    = "Ask PyBullet to record the GUI to video frames",
+    )
+    parser.add_argument(
+        "--num_gates",
+        type    = int,
+        default = 5,
+        help    = "Number of active gates (must match the training config, default: %(default)s)",
     )
     evaluate(parser.parse_args())

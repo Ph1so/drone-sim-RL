@@ -3,11 +3,14 @@ RewardComputer — modular reward shaping for the drone racing task.
 
 Reward components
 -----------------
-1.  Velocity-based progress : dot(lin_vel, unit_vec_to_gate) — zero when hovering
+1.  Velocity-based progress : tanh(dot(lin_vel, unit_vec_to_gate) / PROGRESS_SAT)
+                              saturates at DIST_SHAPING_SCALE — no unbounded catapult reward
 2.  Proximity bonus         : smooth ramp reward inside 1.5 m of gate centre
 3.  Heading alignment       : yaw-forward dot-product vs direction to next gate
 4.  Velocity-gate align     : velocity direction dot-product vs gate normal
-5.  Gate bonus              : large one-off reward on clean gate passage
+5.  Gate bonus              : escalating per-gate reward (GATE_BASE_BONUS × gates_cleared)
+                              gate 1 = 80, gate 2 = 160, … gate 5 = 400
+                              gate 1 bonus (80) < crash penalty (100) → catapult is net-negative
 6.  Time penalty            : small negative reward per step (encourages speed)
 7.  Tilt penalty            : negative reward for excessive roll / pitch
 8.  Angular vel penalty     : quadratic penalty on angular velocity magnitude
@@ -38,12 +41,13 @@ class RewardComputer:
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 12.0   # reward per m/s toward gate
+    DIST_SHAPING_SCALE:    float = 12.0   # max reward/step at velocity saturation
+    PROGRESS_SAT:          float = 2.0    # m/s at which velocity reward hits ~76% of max
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
     HEADING_SCALE:         float = 0.2    # max reward/step at perfect yaw alignment
     VEL_GATE_ALIGN_SCALE:  float = 1.0    # max reward/step when velocity || gate normal
-    GATE_PASS_BONUS:       float = 200.0
+    GATE_BASE_BONUS:       float = 80.0   # multiplied by num_gates_cleared (escalating)
     LAP_COMPLETE_BONUS:    float = 500.0
     TIME_PENALTY:          float = -0.1   # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
@@ -77,17 +81,19 @@ class RewardComputer:
         # 1. Time penalty
         reward += self.TIME_PENALTY
 
-        # 2. Velocity-based progress toward next gate.
-        #    dot(lin_vel, gate_unit) > 0  → flying toward gate  (reward)
-        #                             = 0  → hovering            (zero shaping)
-        #                             < 0  → flying away         (penalty)
-        #    A stationary drone earns nothing here, breaking the hover optimum.
+        # 2. Velocity-based progress toward next gate — saturated via tanh.
+        #    Raw progress > 0  → flying toward gate  (reward, capped at DIST_SHAPING_SCALE)
+        #    Raw progress = 0  → hovering            (zero shaping)
+        #    Raw progress < 0  → flying away         (penalty, floored at −DIST_SHAPING_SCALE)
+        #    Saturation prevents catapult: marginal reward for going faster than
+        #    PROGRESS_SAT m/s is near-zero, so max-thrust is no longer optimal.
         curr_dist = self._gm.dist_to_next(drone_pos)
         info["dist_to_gate"] = round(curr_dist, 4)
         if curr_dist > 1e-6:
             gate_unit = (self._gm.current_gate.position - drone_pos) / curr_dist
             progress  = float(np.dot(drone_lin_vel, gate_unit))
-            reward   += self.DIST_SHAPING_SCALE * progress
+            shaped    = float(np.tanh(progress / self.PROGRESS_SAT))
+            reward   += self.DIST_SHAPING_SCALE * shaped
             info["vel_progress"] = round(progress, 4)
 
         # 2b. Proximity bonus — smooth ramp into the sparse gate bonus
@@ -116,10 +122,14 @@ class RewardComputer:
             reward   += self.VEL_GATE_ALIGN_SCALE * max(0.0, vel_align)
             info["vel_gate_align"] = round(vel_align, 4)
 
-        # 4. Gate passage bonus
+        # 4. Gate passage bonus — escalates with number of gates cleared.
+        #    gate 1 = 80, gate 2 = 160, … gate N = 80*N.
+        #    Gate 1 bonus (80) < crash penalty (100): catapult-and-crash is net-negative.
         if gate_passed:
-            reward += self.GATE_PASS_BONUS
-            info["gate_passed"] = True
+            gate_bonus = self.GATE_BASE_BONUS * self._gm.num_passed
+            reward += gate_bonus
+            info["gate_passed"]  = True
+            info["gate_bonus"]   = round(gate_bonus, 1)
             if self._gm.lap_complete:
                 reward += self.LAP_COMPLETE_BONUS
                 info["lap_complete"] = True
