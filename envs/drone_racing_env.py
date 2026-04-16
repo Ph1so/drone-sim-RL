@@ -12,7 +12,9 @@ Observation space
 -----------------
 Dict{
   "telemetry" : Box(13,) — [pos(3), quat(4), lin_vel(3), ang_vel(3)]
-  "image"     : Box(H, W, 3) uint8 — forward-facing egocentric RGB image
+  "gate_obs"  : Box(5,)  — noisy gate-relative observation (see _compute_gate_obs)
+                           [rel_x, rel_y, rel_z, dist, gate_yaw_err]
+                           expressed in the drone's yaw frame with Gaussian noise
 }
 
 Reward / termination
@@ -22,6 +24,12 @@ See reward.py for the detailed shaping.  Episode ends on:
   • Leaving the world-bounds box
   • Completing all gates (success)
   • Exceeding MAX_EPISODE_STEPS (truncation)
+
+Modular perception note
+-----------------------
+_render_ego_camera() is kept but not used in _computeObs().  At competition time,
+replace the GateManager-based gate position with estimates from a CV pipeline that
+produces the same 5-float gate_obs format — the policy requires no changes.
 """
 
 from __future__ import annotations
@@ -81,12 +89,14 @@ class DroneRacingEnv(BaseAviary):
 
     def __init__(
         self,
-        gui:       bool = False,
-        img_size:  tuple[int, int] = (IMG_H, IMG_W),
-        ctrl_freq: int = 48,
-        record:    bool = False,
+        gui:            bool = False,
+        img_size:       tuple[int, int] = (IMG_H, IMG_W),
+        ctrl_freq:      int = 48,
+        record:         bool = False,
+        gate_noise_std: float = 0.3,
     ) -> None:
         self._img_h, self._img_w = img_size
+        self._gate_noise_std = gate_noise_std
 
         # GateManager and RewardComputer are created before super().__init__
         # because BaseAviary.__init__ calls _addObstacles() internally.
@@ -126,16 +136,19 @@ class DroneRacingEnv(BaseAviary):
     def _observationSpace(self) -> spaces.Dict:
         return spaces.Dict({
             "telemetry": spaces.Box(
-                low  = -np.inf,
-                high =  np.inf,
+                low   = -np.inf,
+                high  =  np.inf,
                 shape = (13,),
                 dtype = np.float32,
             ),
-            "image": spaces.Box(
-                low   = 0,
-                high  = 255,
-                shape = (self._img_h, self._img_w, IMG_C),
-                dtype = np.uint8,
+            # 5-D gate-relative obs in drone yaw frame (with injected noise).
+            # Swap source: replace GateManager lookup with CV pipeline estimates
+            # at competition time — policy interface stays identical.
+            "gate_obs": spaces.Box(
+                low   = -np.inf,
+                high  =  np.inf,
+                shape = (5,),
+                dtype = np.float32,
             ),
         })
 
@@ -229,13 +242,12 @@ class DroneRacingEnv(BaseAviary):
         ang_vel = state[13:16].astype(np.float32)
 
         telemetry = np.concatenate([pos, quat, lin_vel, ang_vel])   # (13,)
-        # Pass pos/quat from cache to avoid a second _getDroneStateVector call.
-        image = self._render_ego_camera(
-            pos  = state[0:3].astype(np.float64),
-            quat = state[3:7].astype(np.float64),
+        gate_obs  = self._compute_gate_obs(
+            pos = state[0:3].astype(np.float64),
+            rpy = cache["rpy"],
         )
 
-        return {"telemetry": telemetry, "image": image}
+        return {"telemetry": telemetry, "gate_obs": gate_obs}
 
     # ------------------------------------------------------------------
     def _computeReward(self) -> float:
@@ -320,6 +332,70 @@ class DroneRacingEnv(BaseAviary):
             if c[2] != drone_id:
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    def _compute_gate_obs(
+        self,
+        pos: np.ndarray,
+        rpy: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Return a noisy 5-D gate observation expressed in the drone's yaw frame.
+
+        Format
+        ------
+        [rel_x, rel_y, rel_z, dist, gate_yaw_err]
+
+        rel_x / rel_y : position of next gate relative to drone projected onto
+                        the drone's forward / left axes (yaw frame, XY-plane)
+        rel_z         : vertical offset (world Z, positive = gate above drone)
+        dist          : euclidean distance derived from the noisy offset
+        gate_yaw_err  : signed angle (rad) from drone heading to gate normal,
+                        positive = gate normal is to the left of drone heading
+
+        Noise
+        -----
+        Gaussian noise σ=gate_noise_std is added to the 3-D world offset before
+        projection.  A small angular noise (σ=0.05 rad ≈ 3°) is added to the
+        yaw error.  This mimics realistic CV estimation uncertainty and prevents
+        the policy from relying on perfect gate information.
+
+        Swap note
+        ---------
+        At competition time replace the GateManager lookup with CV pipeline
+        estimates in the same [rel_x, rel_y, rel_z, dist, gate_yaw_err] format.
+        The policy requires no changes.
+        """
+        gate      = self._gate_manager.current_gate
+        rel_world = gate.position - pos                      # (3,) world frame
+
+        # ── Inject position noise ─────────────────────────────────────
+        noise_xyz = self.np_random.normal(
+            0.0, self._gate_noise_std, size=3
+        ).astype(np.float64)
+        rel_noisy = rel_world + noise_xyz
+
+        dist = float(np.linalg.norm(rel_noisy))
+
+        # ── Project into drone yaw frame ──────────────────────────────
+        yaw = float(rpy[2])
+        c, s  = np.cos(yaw), np.sin(yaw)
+        # forward = [c, s, 0],  left = [-s, c, 0]
+        rel_x = float( c * rel_noisy[0] + s * rel_noisy[1])
+        rel_y = float(-s * rel_noisy[0] + c * rel_noisy[1])
+        rel_z = float(rel_noisy[2])
+
+        # ── Gate heading error ────────────────────────────────────────
+        drone_fwd = np.array([c, s])
+        gate_n_2d = gate.normal[:2]                          # already unit vec
+        cross = float(drone_fwd[0] * gate_n_2d[1] - drone_fwd[1] * gate_n_2d[0])
+        dot   = float(np.dot(drone_fwd, gate_n_2d))
+        gate_yaw_err = float(np.arctan2(cross, dot))
+        gate_yaw_err += float(self.np_random.normal(0.0, 0.05))
+
+        return np.array(
+            [rel_x, rel_y, rel_z, dist, gate_yaw_err], dtype=np.float32
+        )
 
     # ------------------------------------------------------------------
     def _render_ego_camera(

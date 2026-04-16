@@ -26,11 +26,66 @@ import argparse
 import time
 
 import numpy as np
+import pybullet as p
 import torch.nn as nn
 from stable_baselines3 import PPO
 
 from envs import DroneRacingEnv
-from train import MultimodalExtractor, FEATURES_DIM
+from train import GateObsExtractor, FEATURES_DIM
+
+
+# ── Camera control ────────────────────────────────────────────────────────────
+
+def _handle_camera(client: int) -> None:
+    """Adjust the PyBullet debug camera based on keyboard input.
+
+    Controls
+    --------
+    A / D        — orbit yaw left / right
+    W / S        — tilt pitch up / down
+    Q / E        — zoom in / out
+    Arrow keys   — pan the camera target point
+    """
+    keys = p.getKeyboardEvents(physicsClientId=client)
+    if not keys:
+        return
+
+    cam    = p.getDebugVisualizerCamera(physicsClientId=client)
+    dist   = cam[10]
+    yaw    = cam[8]
+    pitch  = cam[9]
+    target = list(cam[11])
+
+    YAW_STEP   = 2.0    # degrees per frame
+    PITCH_STEP = 1.5
+    ZOOM_STEP  = 0.15
+    PAN_STEP   = 0.06
+
+    DOWN = p.KEY_IS_DOWN
+
+    if keys.get(ord('a'), 0) & DOWN: yaw   -= YAW_STEP
+    if keys.get(ord('d'), 0) & DOWN: yaw   += YAW_STEP
+    if keys.get(ord('w'), 0) & DOWN: pitch  = min(pitch + PITCH_STEP, 89)
+    if keys.get(ord('s'), 0) & DOWN: pitch  = max(pitch - PITCH_STEP, -89)
+    if keys.get(ord('q'), 0) & DOWN: dist   = max(0.1, dist - ZOOM_STEP)
+    if keys.get(ord('e'), 0) & DOWN: dist  += ZOOM_STEP
+
+    # Arrow keys pan the target in the horizontal plane
+    yaw_rad = np.radians(yaw)
+    fwd  = np.array([ np.cos(yaw_rad), np.sin(yaw_rad), 0.0])
+    left = np.array([-np.sin(yaw_rad), np.cos(yaw_rad), 0.0])
+    if keys.get(p.B3G_UP_ARROW,    0) & DOWN: target += PAN_STEP * fwd
+    if keys.get(p.B3G_DOWN_ARROW,  0) & DOWN: target -= PAN_STEP * fwd
+    if keys.get(p.B3G_LEFT_ARROW,  0) & DOWN: target += PAN_STEP * left
+    if keys.get(p.B3G_RIGHT_ARROW, 0) & DOWN: target -= PAN_STEP * left
+
+    p.resetDebugVisualizerCamera(
+        cameraDistance       = dist,
+        cameraYaw            = yaw,
+        cameraPitch          = pitch,
+        cameraTargetPosition = target,
+        physicsClientId      = client,
+    )
 
 
 # ── Statistics helper ─────────────────────────────────────────────────────────
@@ -86,7 +141,7 @@ def evaluate(args: argparse.Namespace) -> None:
     # checkpoints saved on Colab Python 3.12 and loaded on Python 3.10).
     custom_objects = {
         "policy_kwargs": dict(
-            features_extractor_class  = MultimodalExtractor,
+            features_extractor_class  = GateObsExtractor,
             features_extractor_kwargs = {"features_dim": FEATURES_DIM},
             net_arch      = dict(pi=[256, 128], vf=[256, 128]),
             activation_fn = nn.ReLU,
@@ -119,6 +174,7 @@ def evaluate(args: argparse.Namespace) -> None:
             obs, reward, terminated, truncated, info = env.step(action)
             stats.update(reward, info, terminated, truncated)
             done = terminated or truncated
+            _handle_camera(env.CLIENT)
             time.sleep(step_sleep)
 
         stats.print_summary(ctrl_freq=env.CTRL_FREQ)

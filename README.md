@@ -85,10 +85,24 @@ M3 (RR, CCW) = hover + 0.5·h·T  +  0.2·h·R  +  0.2·h·P  +  0.1·h·Y
 
 ```python
 Dict{
-  "telemetry": Box(13,)      # pos(3) + quat(4) + lin_vel(3) + ang_vel(3)
-  "image":     Box(64,64,3)  # forward-facing egocentric RGB, 90° FOV, −10° tilt
+  "telemetry": Box(13,)  # pos(3) + quat(4) + lin_vel(3) + ang_vel(3)
+  "gate_obs":  Box(5,)   # noisy gate-relative obs in drone yaw frame (see below)
 }
 ```
+
+`gate_obs` components — all in the drone's yaw-rotated body frame:
+
+| Index | Name | Description |
+|-------|------|-------------|
+| 0 | `rel_x` | Distance to next gate along drone forward axis (m) |
+| 1 | `rel_y` | Distance to next gate along drone left axis (m) |
+| 2 | `rel_z` | Vertical offset to next gate center (m, + = above) |
+| 3 | `dist` | Euclidean distance to next gate (m) |
+| 4 | `gate_yaw_err` | Signed angle from drone heading to gate normal (rad) |
+
+Gaussian noise (σ=0.3 m on position, σ=0.05 rad on heading) is injected at every step to simulate CV estimation uncertainty. Configurable via `DroneRacingEnv(gate_noise_std=...)`.
+
+> **No raw pixels are passed to the policy.** `_render_ego_camera()` is retained in the env for visualization and future CV pipeline integration.
 
 ### Gate Passing Logic
 
@@ -120,13 +134,32 @@ Five gates on an oval-ish lap. The drone spawns at `[0, 0, 0.3]` facing `+Y`.
 
 ### Training Architecture
 
-`MultimodalExtractor` plugged into SB3's `MultiInputPolicy`:
+`GateObsExtractor` plugged into SB3's `MultiInputPolicy`:
 
-- **Image branch** — 4-layer CNN → flat feature vector
-- **Telemetry branch** — 2-layer MLP → 128-D vector
-- **Fusion** — concat → `Linear(256)` → ReLU → policy / value heads
+- **Telemetry branch** — `Linear(13→128)` → LayerNorm → ReLU → `Linear(128→64)` → ReLU → 64-D
+- **Gate-obs branch** — `Linear(5→64)` → LayerNorm → ReLU → `Linear(64→64)` → ReLU → 64-D
+- **Fusion** — concat(128-D) → `Linear(256)` → ReLU → policy / value heads
+
+No CNN. The policy is a pure MLP — fast to train, trivial to run at inference.
 
 PPO hyperparameters: 4 parallel envs, `n_steps=512`, `batch_size=256`, `ent_coef=0.01`, `lr=3e-4`.
+
+### Modular Perception Design
+
+The policy never receives raw pixels. The `gate_obs` vector is the only perception interface:
+
+```
+[Prototype]                          [Competition]
+GateManager (ground truth)           CV pipeline on real sim camera
+  + Gaussian noise injection    →      same 5-float gate_obs format
+        ↓                                       ↓
+        policy ─────────────────────────── same policy weights
+```
+
+To deploy on the competition sim:
+1. Build a CV module that detects the next gate from the onboard camera and outputs `[rel_x, rel_y, rel_z, dist, gate_yaw_err]` in the drone's yaw frame.
+2. Replace the `_compute_gate_obs()` call in `_computeObs()` with your CV module's output.
+3. The trained policy and `GateObsExtractor` require zero changes.
 
 ### Step Cache
 

@@ -3,10 +3,10 @@ train.py — PPO training script for DroneRacingEnv.
 
 Architecture
 ------------
-  MultiInputPolicy + custom MultimodalExtractor:
-    - Image branch  : small CNN (3 conv layers)  →  flat feature vector
-    - Telemetry branch : 2-layer MLP                →  64-D feature vector
-    - Fusion          : concat → Linear(256) → ReLU  →  policy/value heads
+  MultiInputPolicy + custom GateObsExtractor:
+    - Telemetry branch : 2-layer MLP (13-D)  →  64-D feature vector
+    - Gate-obs branch  : 2-layer MLP (5-D)   →  64-D feature vector
+    - Fusion           : concat → Linear(256) → ReLU  →  policy/value heads
 
 Usage
 -----
@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import os
 
-import numpy as np
 import torch
 import torch.nn as nn
 from gymnasium import spaces
@@ -61,14 +60,20 @@ BEST_MODEL_DIR   = "./best_model"     # overridable via --best_model_dir
 # Custom feature extractor
 # ══════════════════════════════════════════════════════════════════════════════
 
-class MultimodalExtractor(BaseFeaturesExtractor):
+class GateObsExtractor(BaseFeaturesExtractor):
     """
     Feature extractor for a Dict observation with keys:
-      "telemetry"  : shape (13,)              — float32
-      "image"      : shape (H, W, 3)          — uint8
+      "telemetry"  : shape (13,)  — float32  [pos, quat, lin_vel, ang_vel]
+      "gate_obs"   : shape (5,)   — float32  [rel_x, rel_y, rel_z, dist, gate_yaw_err]
 
-    CNN processes the image (channels-first), MLP processes telemetry,
-    then both are concatenated and projected to *features_dim*.
+    Two small MLPs are fused into *features_dim* for the policy/value heads.
+    No CNN — the policy never sees raw pixels.
+
+    Swap note
+    ---------
+    At competition time, wire the gate_obs input to estimates from a CV pipeline
+    that produces the same 5-float format.  This extractor and the policy weights
+    require no changes.
     """
 
     def __init__(
@@ -78,68 +83,43 @@ class MultimodalExtractor(BaseFeaturesExtractor):
     ) -> None:
         super().__init__(observation_space, features_dim)
 
-        # ── Image branch (CNN) ────────────────────────────────────────
-        img_space = observation_space["image"]   # (H, W, C)
-        H, W, C   = img_space.shape
+        tel_dim      = observation_space["telemetry"].shape[0]   # 13
+        gate_obs_dim = observation_space["gate_obs"].shape[0]    # 5
 
-        self.cnn = nn.Sequential(
-            # Conv block 1
-            nn.Conv2d(C, 32, kernel_size=5, stride=2, padding=2),  # 32×32
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            # Conv block 2
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # 16×16
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            # Conv block 3
-            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),  # 8×8
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            # Conv block 4 (stride-1 for spatial detail)
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),  # 8×8
-            nn.ReLU(inplace=True),
-            nn.Flatten(),
-        )
-
-        with torch.no_grad():
-            dummy_img = torch.zeros(1, C, H, W)
-            cnn_out   = self.cnn(dummy_img).shape[1]
-
-        # ── Telemetry branch (MLP) ────────────────────────────────────
-        tel_dim = observation_space["telemetry"].shape[0]   # 13
-
+        # ── Telemetry branch ──────────────────────────────────────────
         self.tel_net = nn.Sequential(
             nn.Linear(tel_dim, 128),
             nn.LayerNorm(128),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+        )
+
+        # ── Gate-obs branch ───────────────────────────────────────────
+        self.gate_net = nn.Sequential(
+            nn.Linear(gate_obs_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 64),
             nn.ReLU(inplace=True),
         )
 
         # ── Fusion layer ──────────────────────────────────────────────
         self.fusion = nn.Sequential(
-            nn.Linear(cnn_out + 128, features_dim),
+            nn.Linear(64 + 64, features_dim),
             nn.ReLU(inplace=True),
         )
 
-        # Log architecture sizes
         print(
-            f"[MultimodalExtractor] "
-            f"CNN out={cnn_out}, tel out=128, "
+            f"[GateObsExtractor] "
+            f"tel out=64, gate_obs out=64, "
             f"fusion → {features_dim}"
         )
 
     def forward(self, obs: dict) -> torch.Tensor:
-        # Image: uint8 (B, H, W, C) → float (B, C, H, W), normalised [0,1]
-        img = obs["image"].float() / 255.0
-        img = img.permute(0, 3, 1, 2)          # channels-first
-        img_feat = self.cnn(img)
-
-        # Telemetry: float (B, 13)
-        tel_feat = self.tel_net(obs["telemetry"].float())
-
-        # Fusion
-        return self.fusion(torch.cat([img_feat, tel_feat], dim=1))
+        tel_feat  = self.tel_net(obs["telemetry"].float())
+        gate_feat = self.gate_net(obs["gate_obs"].float())
+        return self.fusion(torch.cat([tel_feat, gate_feat], dim=1))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -186,7 +166,7 @@ def main(args: argparse.Namespace) -> None:
 
     # ── Policy kwargs with custom extractor ──────────────────────────
     policy_kwargs = dict(
-        features_extractor_class  = MultimodalExtractor,
+        features_extractor_class  = GateObsExtractor,
         features_extractor_kwargs = {"features_dim": FEATURES_DIM},
         # Separate policy and value networks after the shared extractor
         net_arch = dict(pi=[256, 128], vf=[256, 128]),
@@ -203,7 +183,7 @@ def main(args: argparse.Namespace) -> None:
             "learning_rate": 5e-5,
             "ent_coef": 0.01,
             "policy_kwargs": dict(
-                features_extractor_class  = MultimodalExtractor,
+                features_extractor_class  = GateObsExtractor,
                 features_extractor_kwargs = {"features_dim": FEATURES_DIM},
                 net_arch      = dict(pi=[256, 128], vf=[256, 128]),
                 activation_fn = nn.ReLU,

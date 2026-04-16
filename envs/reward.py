@@ -11,9 +11,10 @@ Reward components
 6.  Time penalty            : small negative reward per step (encourages speed)
 7.  Tilt penalty            : negative reward for excessive roll / pitch
 8.  Angular vel penalty     : quadratic penalty on angular velocity magnitude
-9.  Collision penalty       : large negative reward + episode ends
-10. Out-of-bounds           : medium negative reward + episode ends
-11. Lap completion          : bonus on completing all gates
+9.  Altitude alignment      : penalty proportional to |drone_z − gate_z|
+10. Collision penalty       : large negative reward + episode ends
+11. Out-of-bounds           : medium negative reward + episode ends
+12. Lap completion          : bonus on completing all gates
 """
 
 from __future__ import annotations
@@ -41,13 +42,14 @@ class RewardComputer:
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
     HEADING_SCALE:         float = 0.2    # max reward/step at perfect yaw alignment
-    VEL_GATE_ALIGN_SCALE:  float = 0.5    # max reward/step when velocity || gate normal
+    VEL_GATE_ALIGN_SCALE:  float = 1.0    # max reward/step when velocity || gate normal
     GATE_PASS_BONUS:       float = 200.0
     LAP_COMPLETE_BONUS:    float = 500.0
-    TIME_PENALTY:          float = -0.2   # per step
+    TIME_PENALTY:          float = -0.1   # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
-    TILT_PENALTY_SCALE:    float = 0      # -2.0
-    ANG_VEL_PENALTY_SCALE: float = -0.10  # × ||omega||^2 per step
+    TILT_PENALTY_SCALE:    float = -0.5
+    ANG_VEL_PENALTY_SCALE: float = -0.02  # × ||omega||^2 per step (reduced to allow banked turns)
+    ALT_ALIGN_SCALE:       float = -0.4   # × |drone_z − gate_z| per step
     COLLISION_PENALTY:     float = -100.0
     OOB_PENALTY:           float = -50.0
 
@@ -128,10 +130,18 @@ class RewardComputer:
             reward += self.TILT_PENALTY_SCALE * (tilt - self.TILT_THRESHOLD)
             info["tilt_penalty"] = True
 
-        # 5b. Angular velocity penalty — quadratic, punishes spinning/wobbling
+        # 5b. Angular velocity penalty — quadratic, punishes spinning/wobbling.
+        #     Kept small so rapid banking for tight turns remains affordable.
         ang_sq  = float(np.dot(drone_ang_vel, drone_ang_vel))
         reward += self.ANG_VEL_PENALTY_SCALE * ang_sq
         info["ang_vel_sq"] = round(ang_sq, 4)
+
+        # 5c. Altitude alignment — penalise vertical offset from the next gate.
+        #     Teaches throttle compensation during banked turns so the drone
+        #     holds gate altitude instead of sinking mid-manoeuvre.
+        alt_err  = abs(drone_pos[2] - self._gm.current_gate.position[2])
+        reward  += self.ALT_ALIGN_SCALE * alt_err
+        info["alt_error"] = round(alt_err, 4)
 
         # 6. Collision
         if collision:
