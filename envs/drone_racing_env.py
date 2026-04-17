@@ -91,15 +91,17 @@ class DroneRacingEnv(BaseAviary):
 
     def __init__(
         self,
-        gui:            bool = False,
-        img_size:       tuple[int, int] = (IMG_H, IMG_W),
-        ctrl_freq:      int = 48,
-        record:         bool = False,
-        gate_noise_std: float = 0.3,
-        num_gates:      int = 5,
+        gui:                    bool = False,
+        img_size:               tuple[int, int] = (IMG_H, IMG_W),
+        ctrl_freq:              int = 48,
+        record:                 bool = False,
+        gate_noise_std:         float = 0.3,
+        num_gates:              int = 5,
+        spawn_mid_course_prob:  float = 0.0,
     ) -> None:
         self._img_h, self._img_w = img_size
-        self._gate_noise_std = gate_noise_std
+        self._gate_noise_std        = gate_noise_std
+        self._spawn_mid_course_prob = spawn_mid_course_prob
 
         # GateManager and RewardComputer are created before super().__init__
         # because BaseAviary.__init__ calls _addObstacles() internally.
@@ -169,10 +171,19 @@ class DroneRacingEnv(BaseAviary):
         obs, info = super().reset(seed=seed, options=options)
         # super().reset() calls _addObstacles() which loads gate URDFs.
 
-        # Initialise reward computer's distance baseline.
-        drone_pos = self._getDroneStateVector(0)[0:3]
-        self._reward_computer.reset()
+        # Optional mid-course spawn: teleport drone to a random gate approach.
+        # Only fires when num_gates > 1 (needs at least one transition to practice).
+        if (
+            self._spawn_mid_course_prob > 0.0
+            and self._gate_manager._n_gates > 1
+            and self.np_random.random() < self._spawn_mid_course_prob
+        ):
+            k = int(self.np_random.integers(1, self._gate_manager._n_gates))
+            self._teleport_to_gate_approach(k)
 
+        self._reward_computer.reset()
+        # Rebuild obs from current (possibly teleported) drone state.
+        obs = self._computeObs()
         return obs, info
 
     # ------------------------------------------------------------------
@@ -296,6 +307,49 @@ class DroneRacingEnv(BaseAviary):
     # Internal helpers
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _teleport_to_gate_approach(self, k: int) -> None:
+        """
+        Teleport the drone to just past gate k-1's exit, facing gate k, at rest.
+
+        This populates mid-course states in the PPO rollout buffer so the policy
+        receives training signal for gate transitions it would rarely reach organically.
+
+        The drone spawns 1.5 m along gate k-1's exit normal, at gate k-1's altitude,
+        with zero linear and angular velocity.  GateManager is fast-forwarded to k.
+
+        Parameters
+        ----------
+        k : int
+            Index of the gate to target after the teleport (1-based, k ≥ 1).
+        """
+        prev_gate = self._gate_manager.gates[k - 1]
+        spawn_pos = prev_gate.position + prev_gate.normal * 1.5   # 1.5 m past exit
+
+        # Yaw faces the next target gate
+        target_gate = self._gate_manager.gates[k]
+        dx = target_gate.position[0] - spawn_pos[0]
+        dy = target_gate.position[1] - spawn_pos[1]
+        yaw = float(np.arctan2(dy, dx))
+
+        quat = p.getQuaternionFromEuler(
+            [0.0, 0.0, yaw], physicsClientId=self.CLIENT
+        )
+        p.resetBasePositionAndOrientation(
+            self.DRONE_IDS[0],
+            spawn_pos.tolist(),
+            quat,
+            physicsClientId=self.CLIENT,
+        )
+        p.resetBaseVelocity(
+            self.DRONE_IDS[0],
+            linearVelocity  = [0.0, 0.0, 0.0],
+            angularVelocity = [0.0, 0.0, 0.0],
+            physicsClientId = self.CLIENT,
+        )
+        self._gate_manager.fast_forward_to(k)
+        self._step_cache = {}   # invalidate stale state
+
+    # ------------------------------------------------------------------
     def _get_step_state(self) -> dict:
         """
         Lazily populate a per-step cache with shared quantities so that

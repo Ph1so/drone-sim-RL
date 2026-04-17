@@ -127,10 +127,10 @@ class GateObsExtractor(BaseFeaturesExtractor):
 # Environment factory
 # ══════════════════════════════════════════════════════════════════════════════
 
-def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5):
+def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5, spawn_mid_course_prob: float = 0.0):
     """Return a callable that creates a single DroneRacingEnv."""
     def _init():
-        env = DroneRacingEnv(gui=False, num_gates=num_gates)
+        env = DroneRacingEnv(gui=False, num_gates=num_gates, spawn_mid_course_prob=spawn_mid_course_prob)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -151,21 +151,25 @@ def main(args: argparse.Namespace) -> None:
 
     n_envs = args.n_envs
 
-    num_gates = args.num_gates
+    num_gates             = args.num_gates
+    spawn_mid_course_prob = args.spawn_mid_course_prob
 
     # ── Vectorised training environments ─────────────────────────────
     if n_envs > 1:
         train_env = SubprocVecEnv(
-            [make_env(rank=i, seed=args.seed, num_gates=num_gates) for i in range(n_envs)]
+            [make_env(rank=i, seed=args.seed, num_gates=num_gates,
+                      spawn_mid_course_prob=spawn_mid_course_prob)
+             for i in range(n_envs)]
         )
     else:
         from stable_baselines3.common.vec_env import DummyVecEnv
-        train_env = DummyVecEnv([make_env(rank=0, seed=args.seed, num_gates=num_gates)])
+        train_env = DummyVecEnv([make_env(rank=0, seed=args.seed, num_gates=num_gates,
+                                          spawn_mid_course_prob=spawn_mid_course_prob)])
 
     train_env = VecMonitor(train_env)
 
-    # ── Evaluation environment (single, deterministic) ───────────────
-    eval_env = DroneRacingEnv(gui=False, num_gates=num_gates)
+    # ── Evaluation environment — no mid-course spawns for clean metrics ──
+    eval_env = DroneRacingEnv(gui=False, num_gates=num_gates, spawn_mid_course_prob=0.0)
 
     # ── Policy kwargs with custom extractor ──────────────────────────
     policy_kwargs = dict(
@@ -246,6 +250,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Total timesteps : {args.timesteps:,}")
     print(f"  Parallel envs   : {n_envs}")
     print(f"  Active gates    : {num_gates} / {len(RACE_GATES)}")
+    print(f"  Mid-course prob : {spawn_mid_course_prob:.0%}")
     print(f"  Device          : {args.device}")
     print(f"{'='*60}\n")
 
@@ -305,5 +310,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_gates", type=int, default=5,
         help="Number of active gates for curriculum training (1–5, default: %(default)s)",
+    )
+    parser.add_argument(
+        "--spawn_mid_course_prob", type=float, default=0.0,
+        help="Probability of spawning mid-course each episode (0–1, default: %(default)s)",
     )
     main(parser.parse_args())

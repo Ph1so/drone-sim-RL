@@ -221,6 +221,27 @@ class GateManager:
         self.lap_complete = False
 
     # ------------------------------------------------------------------
+    def fast_forward_to(self, k: int) -> None:
+        """
+        Mark gates 0 … k-1 as already passed and set the current target to gate k.
+
+        Used by mid-course spawn randomisation so the reward and obs targets the
+        correct gate when the drone is teleported to a mid-course position.
+
+        Parameters
+        ----------
+        k : int
+            Index of the gate to target next (0-based).  Clamped to [1, n_gates-1].
+        """
+        k = max(1, min(k, len(self.gates) - 1))
+        for i in range(k):
+            self.gates[i].passed            = True
+            self.gates[i]._prev_signed_dist = None   # clear crossing tracker
+        self.num_passed   = k
+        self._idx         = k
+        self.lap_complete = False
+
+    # ------------------------------------------------------------------
     def load_gates(self, client: int, urdf_path: str) -> None:
         """
         Load gate URDFs into a PyBullet world.  Must be called after

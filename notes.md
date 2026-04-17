@@ -87,6 +87,53 @@ Additionally, the obs/reward coupling is now much tighter: every reward shaping 
 
 ---
 
+## 2026-04-17 — Fix slow descent after gate 2
+
+### Observation
+After resuming training with `--num_gates 4`, the agent learned to pass gates 1 and 2 with
+controlled, responsible turns (~500k steps). However, after clearing gate 2, it began a slow,
+controlled descent until contacting the floor — not a crash, a deliberate sink.
+
+### Root cause (diagnosed)
+1. Velocity reward goes near-zero after gate 2 (drone still moving in gate 2's direction; gate 3 is perpendicular) — time penalty dominates with no forward signal
+2. Banking during the gate 2 turn reduces effective lift; no reward signal to compensate throttle afterward
+3. Noisy `rel_z` near true zero (gate 3 and drone at same altitude) provides ambiguous altitude signal
+4. Gate 3+ states severely underexplored — PPO value function has low, inaccurate estimates there
+
+### Changes
+
+**Fix A — Vertical velocity penalty (`envs/reward.py`)**
+- Added `VDOWN_PENALTY_SCALE = -3.0`
+- `reward += -3.0 × min(0, vz)` — fires the moment the drone starts sinking
+- At 0.3 m/s descent: costs 0.9/step (9× the time penalty); zero cost when holding or climbing
+- Catches descent early, before altitude error compounds and credit assignment becomes too distant
+
+**Fix B — Stronger altitude alignment (`envs/reward.py`)**
+- Tripled `ALT_ALIGN_SCALE` from `-0.4` → `-1.5`
+- Makes even small altitude drift immediately costly; acts as early warning before large error accumulates
+
+**Fix C — Mid-course spawn randomization (`envs/gate_manager.py`, `envs/drone_racing_env.py`, `train.py`)**
+- New `GateManager.fast_forward_to(k)`: marks gates 0..k-1 as passed, sets target to gate k
+- New `DroneRacingEnv(spawn_mid_course_prob=0.3)`: with 30% probability, teleports drone to
+  1.5m past gate k-1's exit, facing gate k, zero velocity; k chosen randomly from 1..num_gates-1
+- Uses PyBullet `resetBasePositionAndOrientation` + `resetBaseVelocity` after `super().reset()`
+- New `--spawn_mid_course_prob FLOAT` CLI arg in `train.py` (default 0.0; use 0.3 for training)
+- Eval env always uses `spawn_mid_course_prob=0.0` for clean benchmark metrics
+- Directly populates gate 3+ experience in PPO rollout buffer; no change to obs/action space
+
+### Resume command
+```bash
+python train.py --resume {DRIVE}/best_model/best_model.zip \
+    --num_gates 4 --timesteps 5_000_000 --spawn_mid_course_prob 0.3
+```
+
+### Expected outcome
+- Vertical velocity penalty prevents gradual descent; agent must maintain thrust through turns
+- Stronger altitude alignment catches small drifts before they become large errors
+- Mid-course spawns ensure gate 3/4 transitions are trained, not just incidentally visited
+
+---
+
 ## Prior history (pre-diary, reconstructed from git log)
 
 ### Phase 1 — Infrastructure & Setup
