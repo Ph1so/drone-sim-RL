@@ -36,6 +36,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from envs import DroneRacingEnv
 from envs.gate_manager import RACE_GATES
+from envs.reward import RewardComputer
 
 
 # ── Hyper-parameters ──────────────────────────────────────────────────────────
@@ -245,6 +246,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # ── Train ─────────────────────────────────────────────────────────
+    rc = RewardComputer
     print(f"\n{'='*60}")
     print(f"  DroneRacing PPO training")
     print(f"  Total timesteps : {args.timesteps:,}")
@@ -252,6 +254,23 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Active gates    : {num_gates} / {len(RACE_GATES)}")
     print(f"  Mid-course prob : {spawn_mid_course_prob:.0%}")
     print(f"  Device          : {args.device}")
+    print(f"  {'─'*54}")
+    print(f"  Reward policy")
+    print(f"    Rewards")
+    print(f"      vel progress     tanh(v·gate / {rc.PROGRESS_SAT}) × {rc.DIST_SHAPING_SCALE}  (max/step)")
+    print(f"      proximity        up to {rc.PROXIMITY_SCALE} within {rc.PROXIMITY_RADIUS} m of gate")
+    print(f"      heading align    up to {rc.HEADING_SCALE} (yaw vs gate direction)")
+    print(f"      vel gate align   up to {rc.VEL_GATE_ALIGN_SCALE} (velocity vs gate normal)")
+    print(f"      gate bonus       {rc.GATE_BASE_BONUS} × gates_cleared (escalating)")
+    print(f"      lap complete     {rc.LAP_COMPLETE_BONUS}")
+    print(f"    Penalties")
+    print(f"      time             {rc.TIME_PENALTY} / step")
+    print(f"      tilt             {rc.TILT_PENALTY_SCALE} × excess above {round(rc.TILT_THRESHOLD, 2)} rad")
+    print(f"      ang vel          {rc.ANG_VEL_PENALTY_SCALE} × ‖ω‖²")
+    print(f"      alt align        {rc.ALT_ALIGN_SCALE} × |z − gate_z|")
+    print(f"      vdown            {rc.VDOWN_PENALTY_SCALE} × |vz| (when sinking below gate)")
+    print(f"      collision        {rc.COLLISION_PENALTY}")
+    print(f"      out of bounds    {rc.OOB_PENALTY}")
     print(f"{'='*60}\n")
 
     model.learn(
