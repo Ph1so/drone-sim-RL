@@ -9,8 +9,8 @@ Reward components
 3.  Heading alignment       : yaw-forward dot-product vs direction to next gate
 4.  Velocity-gate align     : velocity direction dot-product vs gate normal
 5.  Gate bonus              : escalating per-gate reward (GATE_BASE_BONUS × gates_cleared)
-                              gate 1 = 80, gate 2 = 160, … gate 5 = 400
-                              gate 1 bonus (80) < crash penalty (100) → catapult is net-negative
+                              gate 1 = 150, gate 2 = 300, … gate 5 = 750
+                              gate 1 bonus (150) < crash penalty (300) → catapult is net-negative
 6.  Time penalty            : small negative reward per step (encourages speed)
 7.  Tilt penalty            : negative reward for excessive roll / pitch
 8.  Angular vel penalty     : quadratic penalty on angular velocity magnitude
@@ -43,21 +43,21 @@ class RewardComputer:
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 12.0   # max reward/step at velocity saturation
+    DIST_SHAPING_SCALE:    float = 5.0    # max reward/step at velocity saturation (reduced from 12 to rebalance)
     PROGRESS_SAT:          float = 2.0    # m/s at which velocity reward hits ~76% of max
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
     HEADING_SCALE:         float = 0.2    # max reward/step at perfect yaw alignment
     VEL_GATE_ALIGN_SCALE:  float = 1.0    # max reward/step when velocity || gate normal
-    GATE_BASE_BONUS:       float = 80.0   # multiplied by num_gates_cleared (escalating)
+    GATE_BASE_BONUS:       float = 150.0  # multiplied by num_gates_cleared (escalating; raised from 80)
     LAP_COMPLETE_BONUS:    float = 500.0
     TIME_PENALTY:          float = -0.1   # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
     TILT_PENALTY_SCALE:    float = -0.5
     ANG_VEL_PENALTY_SCALE: float = -0.02  # × ||omega||^2 per step (reduced to allow banked turns)
-    ALT_ALIGN_SCALE:       float = -1.5   # × |drone_z − gate_z| per step (tripled from -0.4)
-    VDOWN_PENALTY_SCALE:   float = -1.5   # × min(0, vz) — fires on descent before alt error grows
-    COLLISION_PENALTY:     float = -100.0
+    ALT_ALIGN_SCALE:       float = -3.0   # × |drone_z − gate_z| per step (doubled from -1.5 to rebalance)
+    VDOWN_PENALTY_SCALE:   float = -3.0   # × abs(vz) when below gate_z — stronger anti-descent signal
+    COLLISION_PENALTY:     float = -300.0
     OOB_PENALTY:           float = -50.0
 
     def __init__(self, gate_manager: GateManager) -> None:

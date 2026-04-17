@@ -134,6 +134,42 @@ python train.py --resume {DRIVE}/best_model/best_model.zip \
 
 ---
 
+## 2026-04-17 — Rebalance reward proportions
+
+### Problem
+At 2.5M training steps the agent reliably clears gates 1–2 but falls after gate 2. Reward
+breakdown revealed the underlying cause: velocity progress (+1210/episode, +9.3/step) was
+10× larger than every other signal. All constraint penalties were single-digit percentages of
+the velocity reward — effectively noise the agent could ignore.
+
+Specific failures in the old proportions:
+- Collision penalty (-100) < 11 steps of vel_progress → crashing barely punished
+- alt_align (-0.73/step) = 8% of vel_progress → altitude error had near-zero gradient
+- Gate bonus (240 for 2 gates) < 2 seconds of vel_progress → gates weren't the primary objective
+
+The priority order for a racing agent should be: **don't crash > pass gates > stay stable > fly fast**.
+The old proportions had this inverted: fly fast dominated everything else.
+
+### Changes (`envs/reward.py`)
+
+| Constant | Old | New | Reason |
+|---|---|---|---|
+| `DIST_SHAPING_SCALE` | 12.0 | 5.0 | Reduce velocity reward so constraints are audible |
+| `COLLISION_PENALTY` | -100.0 | -300.0 | Must be catastrophic; was only 11 steps of vel_progress |
+| `GATE_BASE_BONUS` | 80.0 | 150.0 | Gates are the primary objective; make each passage dominant |
+| `ALT_ALIGN_SCALE` | -1.5 | -3.0 | Was 8% of vel_progress; needs to actually constrain behavior |
+
+### Expected new proportions
+- vel_progress: ~500/episode (5/12 × 1210)
+- gate_bonus: ~450/episode (150+300 for 2 gates)
+- alt_align: ~-190/episode (-3.0/-1.5 × 95)
+- collision: -300 (catastrophic, 2× gate-1 bonus)
+
+Gate passage now rivals vel_progress as the dominant positive signal. Crashing costs more
+than clearing gate 1 earns, restoring the catapult-is-net-negative property.
+
+---
+
 ## 2026-04-17 — Fix altitude overcorrection between Gate 1 → Gate 2
 
 ### Observation
