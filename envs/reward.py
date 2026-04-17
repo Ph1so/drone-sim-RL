@@ -15,8 +15,8 @@ Reward components
 7.  Tilt penalty            : negative reward for excessive roll / pitch
 8.  Angular vel penalty     : quadratic penalty on angular velocity magnitude
 9.  Altitude alignment      : penalty proportional to |drone_z − gate_z| (scale -1.5)
-10. Vertical velocity       : penalty on downward velocity — fires before altitude error
-                              compounds; 4.5× stronger than time penalty at 0.3 m/s sink rate
+10. Vertical velocity       : penalty on downward velocity ONLY when below gate altitude —
+                              prevents sinking to floor without fighting alt_align from above
 11. Collision penalty       : large negative reward + episode ends
 12. Out-of-bounds           : medium negative reward + episode ends
 13. Lap completion          : bonus on completing all gates
@@ -78,11 +78,25 @@ class RewardComputer:
         gate_passed:   bool,
         collision:     bool,
     ) -> tuple[float, dict]:
-        reward = 0.0
         info: dict = {}
 
+        # Per-step reward contributions (all initialised to 0.0).
+        r_time           = 0.0
+        r_vel_progress   = 0.0
+        r_proximity      = 0.0
+        r_heading        = 0.0
+        r_vel_gate_align = 0.0
+        r_gate_bonus     = 0.0
+        r_lap_bonus      = 0.0
+        r_tilt           = 0.0
+        r_ang_vel        = 0.0
+        r_alt_align      = 0.0
+        r_vdown          = 0.0
+        r_collision      = 0.0
+        r_oob            = 0.0
+
         # 1. Time penalty
-        reward += self.TIME_PENALTY
+        r_time = self.TIME_PENALTY
 
         # 2. Velocity-based progress toward next gate — saturated via tanh.
         #    Raw progress > 0  → flying toward gate  (reward, capped at DIST_SHAPING_SCALE)
@@ -93,17 +107,16 @@ class RewardComputer:
         curr_dist = self._gm.dist_to_next(drone_pos)
         info["dist_to_gate"] = round(curr_dist, 4)
         if curr_dist > 1e-6:
-            gate_unit = (self._gm.current_gate.position - drone_pos) / curr_dist
-            progress  = float(np.dot(drone_lin_vel, gate_unit))
-            shaped    = float(np.tanh(progress / self.PROGRESS_SAT))
-            reward   += self.DIST_SHAPING_SCALE * shaped
+            gate_unit      = (self._gm.current_gate.position - drone_pos) / curr_dist
+            progress       = float(np.dot(drone_lin_vel, gate_unit))
+            shaped         = float(np.tanh(progress / self.PROGRESS_SAT))
+            r_vel_progress = self.DIST_SHAPING_SCALE * shaped
             info["vel_progress"] = round(progress, 4)
 
         # 2b. Proximity bonus — smooth ramp into the sparse gate bonus
         if curr_dist < self.PROXIMITY_RADIUS:
-            prox    = self.PROXIMITY_SCALE * (1.0 - curr_dist / self.PROXIMITY_RADIUS)
-            reward += prox
-            info["proximity_bonus"] = round(prox, 4)
+            r_proximity = self.PROXIMITY_SCALE * (1.0 - curr_dist / self.PROXIMITY_RADIUS)
+            info["proximity_bonus"] = round(r_proximity, 4)
 
         # 3. Heading alignment (yaw-forward vs 2-D direction to gate).
         #    Kept small (0.2) so the agent cannot farm reward by just facing the gate.
@@ -113,69 +126,91 @@ class RewardComputer:
         dist_2d    = np.linalg.norm(to_gate_2d)
         if dist_2d > 1e-6:
             alignment = float(np.dot(drone_fwd, to_gate_2d / dist_2d))
-            reward   += self.HEADING_SCALE * max(0.0, alignment)
+            r_heading = self.HEADING_SCALE * max(0.0, alignment)
             info["heading_alignment"] = round(alignment, 4)
 
         # 3b. Velocity-gate-normal alignment (rewards moving through the gate
         #     at the correct approach angle, not just facing it)
         vel_norm = float(np.linalg.norm(drone_lin_vel))
         if vel_norm > 0.5:
-            vel_unit  = drone_lin_vel / vel_norm
-            vel_align = float(np.dot(vel_unit, self._gm.current_gate.normal))
-            reward   += self.VEL_GATE_ALIGN_SCALE * max(0.0, vel_align)
+            vel_unit         = drone_lin_vel / vel_norm
+            vel_align        = float(np.dot(vel_unit, self._gm.current_gate.normal))
+            r_vel_gate_align = self.VEL_GATE_ALIGN_SCALE * max(0.0, vel_align)
             info["vel_gate_align"] = round(vel_align, 4)
 
         # 4. Gate passage bonus — escalates with number of gates cleared.
         #    gate 1 = 80, gate 2 = 160, … gate N = 80*N.
         #    Gate 1 bonus (80) < crash penalty (100): catapult-and-crash is net-negative.
         if gate_passed:
-            gate_bonus = self.GATE_BASE_BONUS * self._gm.num_passed
-            reward += gate_bonus
-            info["gate_passed"]  = True
-            info["gate_bonus"]   = round(gate_bonus, 1)
+            r_gate_bonus = self.GATE_BASE_BONUS * self._gm.num_passed
+            info["gate_passed"] = True
+            info["gate_bonus"]  = round(r_gate_bonus, 1)
             if self._gm.lap_complete:
-                reward += self.LAP_COMPLETE_BONUS
+                r_lap_bonus      = self.LAP_COMPLETE_BONUS
                 info["lap_complete"] = True
 
         # 5. Tilt penalty (penalise nose-over / excessive banking)
         tilt = abs(drone_rpy[0]) + abs(drone_rpy[1])
         if tilt > self.TILT_THRESHOLD:
-            reward += self.TILT_PENALTY_SCALE * (tilt - self.TILT_THRESHOLD)
+            r_tilt = self.TILT_PENALTY_SCALE * (tilt - self.TILT_THRESHOLD)
             info["tilt_penalty"] = True
 
         # 5b. Angular velocity penalty — quadratic, punishes spinning/wobbling.
         #     Kept small so rapid banking for tight turns remains affordable.
-        ang_sq  = float(np.dot(drone_ang_vel, drone_ang_vel))
-        reward += self.ANG_VEL_PENALTY_SCALE * ang_sq
+        ang_sq    = float(np.dot(drone_ang_vel, drone_ang_vel))
+        r_ang_vel = self.ANG_VEL_PENALTY_SCALE * ang_sq
         info["ang_vel_sq"] = round(ang_sq, 4)
 
         # 5c. Altitude alignment — penalise vertical offset from the next gate.
         #     Teaches throttle compensation during banked turns so the drone
         #     holds gate altitude instead of sinking mid-manoeuvre.
-        alt_err  = abs(drone_pos[2] - self._gm.current_gate.position[2])
-        reward  += self.ALT_ALIGN_SCALE * alt_err
+        alt_err     = abs(drone_pos[2] - self._gm.current_gate.position[2])
+        r_alt_align = self.ALT_ALIGN_SCALE * alt_err
         info["alt_error"] = round(alt_err, 4)
 
-        # 5d. Vertical velocity penalty — fires the moment the drone starts sinking,
-        #     well before altitude error compounds.  Zero cost when holding or climbing.
-        #     At 0.3 m/s descent this is 0.45/step — 4.5× the time penalty.
-        vz = float(drone_lin_vel[2])
-        if vz < 0.0:
-            vdown = self.VDOWN_PENALTY_SCALE * vz   # positive scale × negative vz = penalty
-            reward += vdown
-            info["vdown_penalty"] = round(vdown, 4)
+        # 5d. Vertical velocity penalty — fires only when the drone is sinking AND already
+        #     below gate altitude.  If the drone is above gate_z, descending is correct
+        #     behavior (alt_align already provides that gradient); penalising it here would
+        #     fight alt_align and cause the drone to hover above the gate opening.
+        #     Sign: VDOWN_PENALTY_SCALE is negative; abs(vz) is positive → product is negative (penalty).
+        vz     = float(drone_lin_vel[2])
+        gate_z = self._gm.current_gate.position[2]
+        if vz < 0.0 and drone_pos[2] < gate_z:
+            r_vdown = self.VDOWN_PENALTY_SCALE * abs(vz)   # negative scale × positive speed = penalty
+            info["vdown_penalty"] = round(r_vdown, 4)
 
         # 6. Collision
         if collision:
-            reward += self.COLLISION_PENALTY
+            r_collision      = self.COLLISION_PENALTY
             info["collision"] = True
 
         # 7. Out of bounds
         if self._is_oob(drone_pos):
-            reward += self.OOB_PENALTY
+            r_oob                = self.OOB_PENALTY
             info["out_of_bounds"] = True
 
+        reward = (
+            r_time + r_vel_progress + r_proximity + r_heading + r_vel_gate_align
+            + r_gate_bonus + r_lap_bonus + r_tilt + r_ang_vel + r_alt_align
+            + r_vdown + r_collision + r_oob
+        )
+
         info["num_gates_passed"] = self._gm.num_passed
+        info.update({
+            "r_time":           r_time,
+            "r_vel_progress":   r_vel_progress,
+            "r_proximity":      r_proximity,
+            "r_heading":        r_heading,
+            "r_vel_gate_align": r_vel_gate_align,
+            "r_gate_bonus":     r_gate_bonus,
+            "r_lap_bonus":      r_lap_bonus,
+            "r_tilt":           r_tilt,
+            "r_ang_vel":        r_ang_vel,
+            "r_alt_align":      r_alt_align,
+            "r_vdown":          r_vdown,
+            "r_collision":      r_collision,
+            "r_oob":            r_oob,
+        })
         return float(reward), info
 
     # ------------------------------------------------------------------
