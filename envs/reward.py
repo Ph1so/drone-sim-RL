@@ -16,7 +16,7 @@ Reward components
 8.  Angular vel penalty     : quadratic penalty on angular velocity magnitude
 9.  Altitude alignment      : penalty proportional to |drone_z − gate_z| (scale -1.5)
 10. Vertical velocity       : penalty on downward velocity — fires before altitude error
-                              compounds; 9× stronger than time penalty at 0.3 m/s sink rate
+                              compounds; 4.5× stronger than time penalty at 0.3 m/s sink rate
 11. Collision penalty       : large negative reward + episode ends
 12. Out-of-bounds           : medium negative reward + episode ends
 13. Lap completion          : bonus on completing all gates
@@ -56,7 +56,7 @@ class RewardComputer:
     TILT_PENALTY_SCALE:    float = -0.5
     ANG_VEL_PENALTY_SCALE: float = -0.02  # × ||omega||^2 per step (reduced to allow banked turns)
     ALT_ALIGN_SCALE:       float = -1.5   # × |drone_z − gate_z| per step (tripled from -0.4)
-    VDOWN_PENALTY_SCALE:   float = -3.0   # × min(0, vz) — fires on descent before alt error grows
+    VDOWN_PENALTY_SCALE:   float = -1.5   # × min(0, vz) — fires on descent before alt error grows
     COLLISION_PENALTY:     float = -100.0
     OOB_PENALTY:           float = -50.0
 
@@ -158,7 +158,7 @@ class RewardComputer:
 
         # 5d. Vertical velocity penalty — fires the moment the drone starts sinking,
         #     well before altitude error compounds.  Zero cost when holding or climbing.
-        #     At 0.3 m/s descent this is 0.9/step — 9× the time penalty.
+        #     At 0.3 m/s descent this is 0.45/step — 4.5× the time penalty.
         vz = float(drone_lin_vel[2])
         if vz < 0.0:
             vdown = self.VDOWN_PENALTY_SCALE * vz   # positive scale × negative vz = penalty

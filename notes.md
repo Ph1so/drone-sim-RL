@@ -134,6 +134,37 @@ python train.py --resume {DRIVE}/best_model/best_model.zip \
 
 ---
 
+## 2026-04-17 — Fix altitude overcorrection between Gate 1 → Gate 2
+
+### Observation
+After deploying the vdown penalty (`-3.0`) and tripled alt_align (`-1.5`), the drone began
+flying noticeably *higher* during the G1→G2 transit before descending to the floor after G2.
+The slow descent after gate 2 persisted even with `--spawn_mid_course_prob 0.3`.
+
+### Root cause
+Reward conflict between two altitude signals:
+- `VDOWN_PENALTY_SCALE = -3.0` was too aggressive — reward gradient strongly favored climbing
+  any time vz < 0, causing overcorrection above gate altitude (z > 1.5 m) between G1→G2
+- `ALT_ALIGN_SCALE = -1.5` then penalized the drone for being *above* gate altitude, producing
+  a descent gradient — the exact behavior we wanted to prevent
+- The two penalties fought each other: vdown pushed up, alt_align pushed down; in the
+  underexplored post-gate-2 states the policy settled on descending as the net minimum
+
+### Change
+
+**Reduce `VDOWN_PENALTY_SCALE` from `-3.0` to `-1.5` (`envs/reward.py`)**
+- Now matches `ALT_ALIGN_SCALE` magnitude — both altitude signals have the same scale
+- At 0.3 m/s descent: costs 0.45/step (4.5× time penalty) — still strong, not overcorrecting
+- Removes the contradictory gradient that caused climbing above gate altitude
+
+### Expected outcome
+- Drone holds gate altitude more tightly between G1→G2 (no overcorrection)
+- After gate 2, vdown and alt_align now pull in a consistent direction — both discourage
+  both climbing past gate altitude AND descending below it
+- Descent-to-floor behavior should disappear once gate 3 states are explored via mid-course spawns
+
+---
+
 ## Prior history (pre-diary, reconstructed from git log)
 
 ### Phase 1 — Infrastructure & Setup
