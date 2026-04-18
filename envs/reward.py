@@ -54,8 +54,8 @@ class RewardComputer:
     TIME_PENALTY:          float = -0.1   # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
     TILT_PENALTY_SCALE:    float = -0.5
-    ANG_VEL_PENALTY_SCALE: float = -0.005 # × ||omega||^2 per step (reduced to allow banked turns for G1→G2)
-    ALT_ALIGN_SCALE:       float = -4.0   # × |drone_z − gate_z| per step — strong enough to make horizontal-without-climbing net negative
+    ANG_VEL_PENALTY_SCALE: float = -0.02  # × ||omega||^2 per step — raised from -0.005 to prevent tumbling during early training
+    ALT_ALIGN_SCALE:       float = -2.0   # × |drone_z − gate_z| per step — reduced from -4.0; -4.0 caused extreme pitch-up to minimize altitude penalty quickly
     VDOWN_PENALTY_SCALE:   float = 0.0    # disabled — alt_align handles altitude; vdown caused asymmetric cliff below gate_z
     COLLISION_PENALTY:     float = -300.0
     OOB_PENALTY:           float = -50.0
