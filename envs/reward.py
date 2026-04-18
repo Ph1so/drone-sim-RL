@@ -43,8 +43,8 @@ class RewardComputer:
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 5.0    # max reward/step at velocity saturation (reduced from 12 to rebalance)
-    PROGRESS_SAT:          float = 2.0    # m/s at which velocity reward hits ~76% of max
+    DIST_SHAPING_SCALE:    float = 10.0   # max reward/step at velocity saturation
+    PROGRESS_SAT:          float = 1.0    # m/s at which velocity reward hits ~76% of max (lowered to reward slow progress)
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
     HEADING_SCALE:         float = 0.2    # max reward/step at perfect yaw alignment
