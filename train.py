@@ -5,7 +5,7 @@ Architecture
 ------------
   MultiInputPolicy + custom GateObsExtractor:
     - Telemetry branch : 2-layer MLP (13-D)  →  64-D feature vector
-    - Gate-obs branch  : 2-layer MLP (5-D)   →  64-D feature vector
+    - Gate-obs branch  : 2-layer MLP (10-D)  →  64-D feature vector
     - Fusion           : concat → Linear(256) → ReLU  →  policy/value heads
 
 Usage
@@ -66,7 +66,8 @@ class GateObsExtractor(BaseFeaturesExtractor):
     """
     Feature extractor for a Dict observation with keys:
       "telemetry"  : shape (13,)  — float32  [pos, quat, lin_vel, ang_vel]
-      "gate_obs"   : shape (5,)   — float32  [rel_x, rel_y, rel_z, dist, gate_yaw_err]
+      "gate_obs"   : shape (10,)  — float32  [curr_rel_x, curr_rel_y, curr_rel_z, curr_dist, curr_yaw_err,
+                                              next_rel_x, next_rel_y, next_rel_z, next_dist, next_yaw_err]
 
     Two small MLPs are fused into *features_dim* for the policy/value heads.
     No CNN — the policy never sees raw pixels.
@@ -86,7 +87,7 @@ class GateObsExtractor(BaseFeaturesExtractor):
         super().__init__(observation_space, features_dim)
 
         tel_dim      = observation_space["telemetry"].shape[0]   # 13
-        gate_obs_dim = observation_space["gate_obs"].shape[0]    # 5
+        gate_obs_dim = observation_space["gate_obs"].shape[0]    # 10 (curr 5 + next 5)
 
         # ── Telemetry branch ──────────────────────────────────────────
         self.tel_net = nn.Sequential(
