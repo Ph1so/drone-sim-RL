@@ -191,7 +191,9 @@ def evaluate(args: argparse.Namespace) -> None:
     all_breakdowns:   list[dict]  = []
 
     # Single env for all episodes — the window stays open the whole time.
-    env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates)
+    gate_offset = args.gate_offset if args.gate_offset else None
+    env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates,
+                         gate_pos_offset=gate_offset)
 
     # ── Episode loop ──────────────────────────────────────────────────
     for ep in range(1, args.episodes + 1):
@@ -282,5 +284,13 @@ if __name__ == "__main__":
         type    = int,
         default = 5,
         help    = "Number of active gates (must match the training config, default: %(default)s)",
+    )
+    parser.add_argument(
+        "--gate_offset",
+        type    = float,
+        nargs   = 3,
+        default = None,
+        metavar = ("DX", "DY", "DZ"),
+        help    = "Shift all gates by (dx, dy, dz) metres — used to test generalisation",
     )
     evaluate(parser.parse_args())

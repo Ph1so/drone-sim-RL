@@ -201,6 +201,53 @@ Reward conflict between two altitude signals:
 
 ---
 
+## 2026-04-17 — Fix course memorization: replace absolute pos with gate-relative pos in telemetry
+
+### Problem
+Generalization test (`--gate_offset 3.0 2.0 0.0`) showed 0 gates passed vs 2/2 on the
+original course. The `vel_gate_align` breakdown was strongly positive (+217) even with 0 gates
+cleared — the drone flew its trained path, just in the wrong direction relative to the shifted
+gates. Root cause: `telemetry[0:3]` contained raw world coordinates. The network learned
+implicit waypoints ("when pos ≈ [0, 0, 0.3] → execute gate-1 launch") rather than using the
+gate_obs relative signal it was designed for.
+
+### Change (`envs/drone_racing_env.py`, `_computeObs()`)
+
+Replaced absolute `pos = state[0:3]` with gate-relative `pos_rel = pos_world - gate_pos`:
+
+```python
+# Before
+pos     = state[0:3].astype(np.float32)
+telemetry = np.concatenate([pos, quat, lin_vel, ang_vel])   # (13,)
+
+# After
+pos_world = state[0:3].astype(np.float32)
+gate_pos  = self._gate_manager.current_gate.position.astype(np.float32)
+pos_rel   = pos_world - gate_pos          # gate-relative position (3,)
+telemetry = np.concatenate([pos_rel, quat, lin_vel, ang_vel])   # (13,)
+```
+
+Observation space shape and bounds unchanged (still 13 floats, unbounded). Docstring updated.
+
+### Why this approach
+- Absolute pos allowed the network to memorize course geometry as implicit waypoints
+- Gate-relative pos forces the network to localize itself w.r.t. the current target gate
+- The same gate_manager lookup already ran for reward computation — zero new coupling
+- At competition time: replace `gate_manager.current_gate.position` with CV pipeline estimate
+  of gate centre in world frame — no network or architecture changes required
+
+### Training impact
+Must retrain from scratch. Old weights expected absolute coordinates in the first 3 inputs of
+the telemetry branch; those expectations are incompatible with gate-relative inputs.
+
+### Training command
+```bash
+python train.py --num_gates 2 --timesteps 8_000_000 --spawn_mid_course_prob 0.0
+```
+Start from scratch with 2 gates. Expand to 5 once 2/2 laps complete consistently.
+
+---
+
 ## Prior history (pre-diary, reconstructed from git log)
 
 ### Phase 1 — Infrastructure & Setup

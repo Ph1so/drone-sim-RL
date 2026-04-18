@@ -158,12 +158,14 @@ class GateManager:
         dist   = gm.dist_to_next(pos)
     """
 
-    def __init__(self, num_gates: int = 5) -> None:
-        self._n_gates = min(max(num_gates, 1), len(RACE_GATES))
-        self.gates: List[Gate] = [copy.deepcopy(g) for g in RACE_GATES[:self._n_gates]]
+    def __init__(self, num_gates: int = 5, pos_offset: Optional[np.ndarray] = None) -> None:
+        self._n_gates   = min(max(num_gates, 1), len(RACE_GATES))
+        self._pos_offset = np.asarray(pos_offset, dtype=np.float64) if pos_offset is not None else None
         self._idx:  int  = 0
         self.num_passed:   int  = 0
         self.lap_complete: bool = False
+        self.gates: List[Gate] = []
+        self.reset()
 
     # ------------------------------------------------------------------
     @property
@@ -215,7 +217,10 @@ class GateManager:
     # ------------------------------------------------------------------
     def reset(self) -> None:
         """Reset all gates and counters for a new episode."""
-        self.gates        = [copy.deepcopy(g) for g in RACE_GATES[:self._n_gates]]
+        self.gates = [copy.deepcopy(g) for g in RACE_GATES[:self._n_gates]]
+        if self._pos_offset is not None:
+            for gate in self.gates:
+                gate.position = gate.position + self._pos_offset
         self._idx         = 0
         self.num_passed   = 0
         self.lap_complete = False

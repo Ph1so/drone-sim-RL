@@ -11,7 +11,7 @@ Mapped to per-motor RPMs via a classical quadrotor mixer.
 Observation space
 -----------------
 Dict{
-  "telemetry" : Box(13,)  — [pos(3), quat(4), lin_vel(3), ang_vel(3)]
+  "telemetry" : Box(13,)  — [pos_rel_to_gate(3), quat(4), lin_vel(3), ang_vel(3)]
   "gate_obs"  : Box(10,)  — noisy gate-relative observation (see _compute_gate_obs)
                             [curr_rel_x, curr_rel_y, curr_rel_z, curr_dist, curr_yaw_err,
                              next_rel_x, next_rel_y, next_rel_z, next_dist, next_yaw_err]
@@ -98,6 +98,7 @@ class DroneRacingEnv(BaseAviary):
         gate_noise_std:         float = 0.3,
         num_gates:              int = 5,
         spawn_mid_course_prob:  float = 0.0,
+        gate_pos_offset:        Optional[list] = None,
     ) -> None:
         self._img_h, self._img_w = img_size
         self._gate_noise_std        = gate_noise_std
@@ -105,7 +106,7 @@ class DroneRacingEnv(BaseAviary):
 
         # GateManager and RewardComputer are created before super().__init__
         # because BaseAviary.__init__ calls _addObstacles() internally.
-        self._gate_manager   = GateManager(num_gates=num_gates)
+        self._gate_manager   = GateManager(num_gates=num_gates, pos_offset=gate_pos_offset)
         self._reward_computer = RewardComputer(self._gate_manager)
 
         # Per-step cache (populated once, read by reward/term/info methods)
@@ -251,12 +252,15 @@ class DroneRacingEnv(BaseAviary):
         cache = self._get_step_state()
         state = cache["state"]
 
-        pos     = state[0:3].astype(np.float32)
+        pos_world = state[0:3].astype(np.float32)
+        gate_pos  = self._gate_manager.current_gate.position.astype(np.float32)
+        pos_rel   = pos_world - gate_pos          # gate-relative position (3,)
+
         quat    = state[3:7].astype(np.float32)
         lin_vel = state[10:13].astype(np.float32)
         ang_vel = state[13:16].astype(np.float32)
 
-        telemetry = np.concatenate([pos, quat, lin_vel, ang_vel])   # (13,)
+        telemetry = np.concatenate([pos_rel, quat, lin_vel, ang_vel])   # (13,)
         gate_obs  = self._compute_gate_obs(
             pos = state[0:3].astype(np.float64),
             rpy = cache["rpy"],
