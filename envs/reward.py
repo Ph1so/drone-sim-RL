@@ -43,7 +43,7 @@ class RewardComputer:
     """
 
     # ── Reward coefficients ────────────────────────────────────────────
-    DIST_SHAPING_SCALE:    float = 10.0   # max reward/step at velocity saturation
+    DIST_SHAPING_SCALE:    float = 5.0    # max reward/step at velocity saturation; reduced from 10.0 — smaller incentive to throw into gate
     PROGRESS_SAT:          float = 1.0    # m/s at which velocity reward hits ~76% of max (lowered to reward slow progress)
     PROXIMITY_SCALE:       float = 0.5    # max bonus/step inside capture radius
     PROXIMITY_RADIUS:      float = 1.5    # metres — gate capture zone
@@ -54,7 +54,7 @@ class RewardComputer:
     TIME_PENALTY:          float = -0.1   # per step
     TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
     TILT_PENALTY_SCALE:    float = -0.5
-    ANG_VEL_PENALTY_SCALE: float = -0.02  # × ||omega||^2 per step — raised from -0.005 to prevent tumbling during early training
+    ANG_VEL_PENALTY_SCALE: float = -0.05  # × ||omega||^2 per step — raised from -0.02; at 38 rad/s tumbling costs ~72/step vs ~29 before, must exceed velocity-progress gain
     ALT_ALIGN_SCALE:       float = -2.0   # × |drone_z − gate_z| per step — reduced from -4.0; -4.0 caused extreme pitch-up to minimize altitude penalty quickly
     VDOWN_PENALTY_SCALE:   float = 0.0    # disabled — alt_align handles altitude; vdown caused asymmetric cliff below gate_z
     COLLISION_PENALTY:     float = -300.0
