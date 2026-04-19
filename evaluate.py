@@ -255,6 +255,16 @@ def _save_traj_plot(
         label = (f"→ G{seg + 1}" if seg < num_gates else "post-last")
         ax.plot(pos[mask, 0], pos[mask, 1], color=color, lw=1.8, label=label)
     ax.plot(pos[0, 0], pos[0, 1], "g^", ms=8, zorder=5, label="spawn")
+    spawn_yaw = rpy[0, 2]   # yaw in radians at first recorded step
+    _ARROW_LEN = 0.4
+    ax.annotate(
+        "",
+        xy=(pos[0, 0] + np.cos(spawn_yaw) * _ARROW_LEN,
+            pos[0, 1] + np.sin(spawn_yaw) * _ARROW_LEN),
+        xytext=(pos[0, 0], pos[0, 1]),
+        arrowprops=dict(arrowstyle="->", color="green", lw=2.0),
+        zorder=6,
+    )
     if flip_step is not None:
         ax.plot(pos[flip_step, 0], pos[flip_step, 1],
                 "rx", ms=14, mew=2.5, zorder=6, label=f"flip (step {flip_step})")

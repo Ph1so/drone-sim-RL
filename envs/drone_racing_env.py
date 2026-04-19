@@ -358,20 +358,26 @@ class DroneRacingEnv(BaseAviary):
         """
         prev_gate = self._gate_manager.gates[k - 1]
 
-        # G3→G4 tight corner: spawn on the chord between gates, not past G3's exit.
+        # ── Spawn position ────────────────────────────────────────────────────
+        # G3→G4 tight corner: spawn along the G3→G4 chord so the drone has
+        # enough runway before G4's x-coordinate.  All other transitions spawn
+        # just past gate k-1's exit plane.
         if k == 3 and len(self._gate_manager.gates) > k:
-            next_gate = self._gate_manager.gates[k]
-            arc_dir = (next_gate.position - prev_gate.position).copy()
-            arc_dir[2] = 0.0                          # horizontal only; altitude unchanged
-            arc_dir /= np.linalg.norm(arc_dir)
-            spawn_pos = prev_gate.position.copy()
-            spawn_pos += arc_dir * self._SPAWN_OFFSET
-            exit_yaw  = float(np.arctan2(arc_dir[1], arc_dir[0]))
-            spawn_vel = (arc_dir * self._ARC_SPAWN_SPEED).tolist()
+            chord = (self._gate_manager.gates[k].position - prev_gate.position).copy()
+            chord[2] = 0.0
+            chord /= np.linalg.norm(chord)
+            spawn_pos   = prev_gate.position.copy() + chord * self._SPAWN_OFFSET
+            spawn_speed = self._ARC_SPAWN_SPEED
         else:
-            spawn_pos = prev_gate.position + prev_gate.normal * self._SPAWN_OFFSET
-            exit_yaw  = float(np.arctan2(prev_gate.normal[1], prev_gate.normal[0]))
-            spawn_vel = (prev_gate.normal * self._SPAWN_SPEED).tolist()
+            spawn_pos   = prev_gate.position + prev_gate.normal * self._SPAWN_OFFSET
+            spawn_speed = self._SPAWN_SPEED
+
+        # ── Face toward the target gate ───────────────────────────────────────
+        to_target = self._gate_manager.gates[k].position - spawn_pos
+        to_target[2] = 0.0                           # horizontal only
+        to_target /= np.linalg.norm(to_target)
+        exit_yaw  = float(np.arctan2(to_target[1], to_target[0]))
+        spawn_vel = (to_target * spawn_speed).tolist()
 
         quat = p.getQuaternionFromEuler(
             [0.0, 0.0, exit_yaw], physicsClientId=self.CLIENT
