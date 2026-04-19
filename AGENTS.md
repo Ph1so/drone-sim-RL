@@ -100,20 +100,19 @@ Training from scratch on 5 gates fails to converge. Always use the 1→3→5 gat
 
 ## Reward Components (current values)
 
-| Component | Value | Notes |
+Swift formulation — Kaufmann et al. 2023. No per-gate or lap-completion bonuses;
+`r_prog` is dense enough to guide the agent through every gate without sparse rewards.
+Gate transitions reset `_prev_dist` to avoid a negative spike when the target switches
+to the next (farther) gate.
+
+| Component | Formula | Weight |
 |---|---|---|
-| Velocity progress | `12.0 × tanh(v·gate_dir / 2.0)` | Saturated; prevents catapult |
-| Proximity bonus | up to `+0.5/step` within 1.5 m | Smooth ramp |
-| Heading alignment | up to `+0.2/step` | Small; prevents yaw gaming |
-| Velocity-gate alignment | up to `+1.0/step` | Flying through correctly |
-| Gate passage (escalating) | `80 × gates_cleared` | G1=80 … G5=400 |
-| Lap completion | `+500` | Full lap bonus |
-| Time penalty | `−0.1/step` | Encourages speed |
-| Tilt penalty | `−0.5 × (tilt − 45°)` when over 45° | |
-| Angular velocity | `−0.02 × ‖ω‖²/step` | Discourages spinning |
-| Altitude alignment | `−0.4 × \|z − gate_z\|/step` | Sharp; forces throttle correction |
-| Collision | `−100` + terminate | |
-| Out-of-bounds | `−50` + terminate | |
+| Progress | `d_{t-1} − d_t` (distance delta to next gate) | λ₁ = 1.0 |
+| Perception | `exp(−δ_cam / σ)`, δ_cam = angle from body-fwd to gate | λ₂ = 0.02, σ = 0.5 rad |
+| Jerk penalty | `−‖a_t − a_{t-1}‖²` | λ₄ = 2×10⁻⁴ |
+| Body-rate penalty | `−‖a_t^ω‖²` (roll/pitch/yaw channels) | λ₅ = 1×10⁻⁴ |
+| Ang-vel penalty | `−‖ω‖²` (physical angular velocity) | λ₆ = 0.02 |
+| Crash / Out-of-bounds | `−50` + episode ends | — |
 
 ## Racecourse
 
