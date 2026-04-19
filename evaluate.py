@@ -195,21 +195,24 @@ def _save_traj_plot(
     num_gates: int,
 ) -> None:
     """
-    Save a 3-panel diagnostic PNG for one episode.
+    Save a 4-panel diagnostic PNG for one episode.
 
     Panel 1 — Bird's-eye XY trajectory
         Flight path coloured by which gate is being targeted.
         Gate openings (thick bars) and exit-normal arrows drawn.
         Flip location marked with a red ×.
 
-    Panel 2 — Roll & Pitch over time
+    Panel 2 — Speed (‖v‖) over time
+        Total speed in m/s with gate passage markers.
+
+    Panel 3 — Roll & Pitch over time
         Both in degrees, with ±FLIP_THRESHOLD dashed lines and
         vertical markers where each gate was passed.
 
-    Panel 3 — Angular velocity magnitude ‖ω‖ over time
+    Panel 4 — Angular velocity magnitude ‖ω‖ over time
         Shows whether instability builds gradually or spikes suddenly.
 
-    All three panels share the same step axis so they can be read in sync.
+    Panels 2–4 share the same step axis so they can be read in sync.
     """
     try:
         import matplotlib
@@ -224,9 +227,11 @@ def _save_traj_plot(
 
     pos      = np.array(traj["pos"],        dtype=float)   # (N, 3)
     rpy      = np.array(traj["rpy"],        dtype=float)   # (N, 3) radians
+    lin_vel  = np.array(traj["lin_vel"],    dtype=float)   # (N, 3)
     ang_sq   = np.array(traj["ang_vel_sq"], dtype=float)   # (N,)
     g_idx    = np.array(traj["gate_idx"],   dtype=int)     # (N,)
     steps    = np.arange(len(pos))
+    speed    = np.linalg.norm(lin_vel, axis=1)             # (N,) m/s
 
     flip_thresh_deg = np.rad2deg(RewardComputer.FLIP_THRESHOLD)
 
@@ -237,7 +242,7 @@ def _save_traj_plot(
 
     seg_colors = ["tab:cyan", "tab:green", "tab:orange", "tab:red", "tab:purple", "tab:brown"]
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 13))
+    fig, axes = plt.subplots(4, 1, figsize=(10, 17))
     fig.suptitle(f"Episode {ep_num} — Diagnostic Trajectory", fontsize=13, fontweight="bold")
 
     # ── Panel 1: Bird's-eye XY ──────────────────────────────────────────
@@ -273,8 +278,22 @@ def _save_traj_plot(
     ax.set_title("Bird's-eye trajectory — colour = current gate target")
     ax.grid(True, alpha=0.3)
 
-    # ── Panel 2: Roll & Pitch ───────────────────────────────────────────
+    # ── Panel 2: Speed ─────────────────────────────────────────────────
     ax = axes[1]
+    ax.plot(steps, speed, color="tab:blue", lw=1.5, label="‖v‖")
+    ax.fill_between(steps, speed, alpha=0.15, color="tab:blue")
+    for s in gate_pass_steps:
+        ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
+    if flip_step is not None:
+        ax.axvline(flip_step, color="red", lw=1.5, alpha=0.6, label="flip")
+    ax.set_xlabel("step")
+    ax.set_ylabel("m/s")
+    ax.set_title("Speed ‖v‖  (green verticals = gate passages)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # ── Panel 3: Roll & Pitch ───────────────────────────────────────────
+    ax = axes[2]
     roll_deg  = np.rad2deg(rpy[:, 0])
     pitch_deg = np.rad2deg(rpy[:, 1])
     ax.plot(steps, roll_deg,  color="tab:blue",   lw=1.5, label="roll")
@@ -293,8 +312,8 @@ def _save_traj_plot(
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # ── Panel 3: Angular velocity magnitude ────────────────────────────
-    ax = axes[2]
+    # ── Panel 4: Angular velocity magnitude ────────────────────────────
+    ax = axes[3]
     omega = np.sqrt(np.maximum(ang_sq, 0.0))
     ax.plot(steps, omega, color="tab:red", lw=1.5, label="‖ω‖")
     ax.fill_between(steps, omega, alpha=0.15, color="tab:red")
@@ -400,7 +419,8 @@ def evaluate(args: argparse.Namespace) -> None:
     # Single env for all episodes — the window stays open the whole time.
     gate_offset = args.gate_offset if args.gate_offset else None
     env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates,
-                         gate_pos_offset=gate_offset)
+                         gate_pos_offset=gate_offset,
+                         spawn_mid_course_prob=args.spawn_mid_course_prob)
 
     _draw_oob_wireframe(env.CLIENT)
 
@@ -417,9 +437,50 @@ def evaluate(args: argparse.Namespace) -> None:
         # Snapshot active gates after reset (gate_offset already applied).
         snap_gates = list(env._gate_manager.gates)
 
+        # Show spawn info and mark position in the GUI.
+        spawn_state = env._getDroneStateVector(0)
+        spawn_pos   = spawn_state[0:3]
+        gate_label  = env._gate_manager.current_gate.label if env._gate_manager.current_gate else "?"
+        print(f"  [spawn] ep {ep} — pos ({spawn_pos[0]:.2f}, {spawn_pos[1]:.2f}, {spawn_pos[2]:.2f})"
+              f"  targeting {gate_label}")
+        # Yellow debug sphere at spawn location (radius 0.15 m, persists for 30 s).
+        p.addUserDebugLine(
+            lineFromXYZ     = (spawn_pos[0] - 0.15, spawn_pos[1], spawn_pos[2]),
+            lineToXYZ       = (spawn_pos[0] + 0.15, spawn_pos[1], spawn_pos[2]),
+            lineColorRGB    = [1.0, 0.9, 0.0],
+            lineWidth       = 4,
+            lifeTime        = 30,
+            physicsClientId = env.CLIENT,
+        )
+        p.addUserDebugLine(
+            lineFromXYZ     = (spawn_pos[0], spawn_pos[1] - 0.15, spawn_pos[2]),
+            lineToXYZ       = (spawn_pos[0], spawn_pos[1] + 0.15, spawn_pos[2]),
+            lineColorRGB    = [1.0, 0.9, 0.0],
+            lineWidth       = 4,
+            lifeTime        = 30,
+            physicsClientId = env.CLIENT,
+        )
+        p.addUserDebugLine(
+            lineFromXYZ     = (spawn_pos[0], spawn_pos[1], spawn_pos[2] - 0.15),
+            lineToXYZ       = (spawn_pos[0], spawn_pos[1], spawn_pos[2] + 0.15),
+            lineColorRGB    = [1.0, 0.9, 0.0],
+            lineWidth       = 4,
+            lifeTime        = 30,
+            physicsClientId = env.CLIENT,
+        )
+        p.addUserDebugText(
+            text            = f"ep{ep} → {gate_label}",
+            textPosition    = (spawn_pos[0], spawn_pos[1], spawn_pos[2] + 0.25),
+            textColorRGB    = [1.0, 0.9, 0.0],
+            textSize        = 1.2,
+            lifeTime        = 30,
+            physicsClientId = env.CLIENT,
+        )
+
         traj: dict = {
             "pos":        [],
             "rpy":        [],
+            "lin_vel":    [],
             "ang_vel_sq": [],
             "gate_idx":   [],
             "flip_fired": [],
@@ -430,9 +491,10 @@ def evaluate(args: argparse.Namespace) -> None:
             obs, reward, terminated, truncated, info = env.step(action)
             stats.update(reward, info, terminated, truncated)
             done = terminated or truncated
-            if args.plot and "drone_pos" in info:
+            if (args.plot or args.spawn_mid_course_prob > 0) and "drone_pos" in info:
                 traj["pos"].append(info["drone_pos"])
                 traj["rpy"].append(info["drone_rpy"])
+                traj["lin_vel"].append(info["drone_lin_vel"])
                 traj["ang_vel_sq"].append(info.get("ang_vel_sq", 0.0))
                 traj["gate_idx"].append(info.get("current_gate_idx", 0))
                 traj["flip_fired"].append(bool(info.get("flip", False)))
@@ -450,7 +512,7 @@ def evaluate(args: argparse.Namespace) -> None:
             laps_completed += 1
         all_breakdowns.append(stats.breakdown)
 
-        if args.plot and traj["pos"]:
+        if (args.plot or args.spawn_mid_course_prob > 0) and traj["pos"]:
             _save_traj_plot(traj, ep, snap_gates, args.num_gates)
 
         if ep == 1 and gif_frames:
@@ -527,6 +589,14 @@ if __name__ == "__main__":
         default = None,
         metavar = ("DX", "DY", "DZ"),
         help    = "Shift all gates by (dx, dy, dz) metres — used to test generalisation",
+    )
+    parser.add_argument(
+        "--spawn_mid_course_prob",
+        type    = float,
+        default = 0.0,
+        metavar = "P",
+        help    = "Probability [0, 1] of teleporting the drone to a random mid-course gate "
+                  "approach at episode start (default: 0 — always spawn at start line)",
     )
     parser.add_argument(
         "--plot",

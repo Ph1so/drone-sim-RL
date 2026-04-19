@@ -308,6 +308,7 @@ class DroneRacingEnv(BaseAviary):
         info["collision"]        = cache["collision"]
         info["drone_pos"]        = cache["pos"].copy()   # world-frame (3,) — for trajectory plots
         info["drone_rpy"]        = cache["rpy"].copy()   # roll, pitch, yaw in radians — for flip diagnosis
+        info["drone_lin_vel"]    = cache["state"][10:13].copy()   # world-frame linear velocity (m/s)
         return info
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -317,7 +318,9 @@ class DroneRacingEnv(BaseAviary):
     # Speed injected at mid-course spawns — approximates realistic post-gate velocity.
     # Matches the evaluation distribution (drone exits a gate with forward momentum)
     # so the policy learns to handle the turn, not just approach from a standstill.
-    _SPAWN_SPEED: float = 2.0   # m/s along previous gate's exit normal
+    _SPAWN_OFFSET:    float = 1.5   # m offset from prev gate centre
+    _SPAWN_SPEED:     float = 2.0   # m/s for normal gate transitions
+    _ARC_SPAWN_SPEED: float = 1.0   # m/s for tight corners (G3→G4)
 
     def _teleport_to_gate_approach(self, k: int) -> None:
         """
@@ -329,13 +332,24 @@ class DroneRacingEnv(BaseAviary):
         "turn from gate k-1's exit momentum into gate k's approach axis" — the exact
         maneuver that fails in evaluation.
 
-        The drone now spawns:
-          - Position : 1.5 m along gate k-1's exit normal (unchanged)
-          - Yaw      : aligned with gate k-1's exit direction (was: pointing at gate k)
-          - Velocity : _SPAWN_SPEED m/s along the exit normal  (was: zero)
+        Normal corners (k ≠ 3):
+          - Position : _SPAWN_OFFSET m along gate k-1's exit normal
+          - Yaw      : aligned with gate k-1's exit direction
+          - Velocity : _SPAWN_SPEED m/s along the exit normal
           - Angular  : zero
 
-        GateManager is fast-forwarded to k.
+        G3→G4 tight corner (k=3):
+          G3 exits heading east while G4 is mostly south (~80° turn).  Spawning
+          1.5 m east of G3 lands the drone almost at G4's x-coordinate with
+          eastward momentum — only ~0.5 m of valid travel before overshoot.
+          Instead, spawn _SPAWN_OFFSET m along the G3→G4 chord so the drone
+          starts on the arc with enough runway to complete the turn:
+          - Position : _SPAWN_OFFSET m from G3 in the G3→G4 direction
+          - Yaw      : facing along G3→G4 chord (south-southeast)
+          - Velocity : _ARC_SPAWN_SPEED m/s along G3→G4 chord
+          - Angular  : zero
+
+        GateManager is fast-forwarded to k in all cases.
 
         Parameters
         ----------
@@ -343,11 +357,21 @@ class DroneRacingEnv(BaseAviary):
             Index of the gate to target after the teleport (1-based, k ≥ 1).
         """
         prev_gate = self._gate_manager.gates[k - 1]
-        spawn_pos = prev_gate.position + prev_gate.normal * 1.5   # 1.5 m past exit
 
-        # Yaw aligned with the exit direction of the gate just passed.
-        # In evaluation the drone exits heading along prev_gate.normal — match that.
-        exit_yaw = float(np.arctan2(prev_gate.normal[1], prev_gate.normal[0]))
+        # G3→G4 tight corner: spawn on the chord between gates, not past G3's exit.
+        if k == 3 and len(self._gate_manager.gates) > k:
+            next_gate = self._gate_manager.gates[k]
+            arc_dir = (next_gate.position - prev_gate.position).copy()
+            arc_dir[2] = 0.0                          # horizontal only; altitude unchanged
+            arc_dir /= np.linalg.norm(arc_dir)
+            spawn_pos = prev_gate.position.copy()
+            spawn_pos += arc_dir * self._SPAWN_OFFSET
+            exit_yaw  = float(np.arctan2(arc_dir[1], arc_dir[0]))
+            spawn_vel = (arc_dir * self._ARC_SPAWN_SPEED).tolist()
+        else:
+            spawn_pos = prev_gate.position + prev_gate.normal * self._SPAWN_OFFSET
+            exit_yaw  = float(np.arctan2(prev_gate.normal[1], prev_gate.normal[0]))
+            spawn_vel = (prev_gate.normal * self._SPAWN_SPEED).tolist()
 
         quat = p.getQuaternionFromEuler(
             [0.0, 0.0, exit_yaw], physicsClientId=self.CLIENT
@@ -358,7 +382,6 @@ class DroneRacingEnv(BaseAviary):
             quat,
             physicsClientId=self.CLIENT,
         )
-        spawn_vel = (prev_gate.normal * self._SPAWN_SPEED).tolist()
         p.resetBaseVelocity(
             self.DRONE_IDS[0],
             linearVelocity  = spawn_vel,

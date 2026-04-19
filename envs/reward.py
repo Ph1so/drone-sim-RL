@@ -54,7 +54,7 @@ class RewardComputer:
     TIME_PENALTY:          float = -0.1   # per step
     TILT_THRESHOLD:        float = np.deg2rad(40)  # combined |roll|+|pitch| limit; lowered from 45° — 40° still allows tight turns
     TILT_PENALTY_SCALE:    float = -2.0            # raised from -0.5; at 90° pitch: -2.0*(1.57-0.70)≈-1.75/step vs old -0.39/step
-    FLIP_THRESHOLD:        float = np.deg2rad(85)  # per-axis limit; raised from 80° — G3→G4 is the sharpest corner and needs a few extra degrees of banking room
+    FLIP_THRESHOLD:        float = np.deg2rad(90)  # per-axis limit; raised from 85° — 90° is the knife-edge limit (true inversion starts above this)
     FLIP_PENALTY:          float = -200.0          # one-shot terminal penalty for flip; makes catapult strategy impossible — episode ends before reaching gate
     ANG_VEL_PENALTY_SCALE: float = -0.05  # × ||omega||^2 per step — raised from -0.02; at 38 rad/s tumbling costs ~72/step vs ~29 before, must exceed velocity-progress gain
     ALT_ALIGN_SCALE:       float = -2.0   # × |drone_z − gate_z| per step — reduced from -4.0; -4.0 caused extreme pitch-up to minimize altitude penalty quickly
@@ -159,7 +159,7 @@ class RewardComputer:
             info["tilt_penalty"] = True
 
         # 5e. Flip penalty — fires on the terminal step when either roll or pitch
-        #     exceeds FLIP_THRESHOLD (80°).  Because is_terminated() also checks
+        #     exceeds FLIP_THRESHOLD (90°).  Because is_terminated() also checks
         #     this condition, this penalty fires exactly once per flipped episode.
         #     Makes the catapult-and-crash strategy net-negative even before
         #     the collision penalty is considered.
