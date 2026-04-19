@@ -306,6 +306,8 @@ class DroneRacingEnv(BaseAviary):
         info  = dict(cache.get("reward_info", {}))
         info["gate_passed"]      = cache.get("gate_passed", False)
         info["collision"]        = cache["collision"]
+        info["drone_pos"]        = cache["pos"].copy()   # world-frame (3,) — for trajectory plots
+        info["drone_rpy"]        = cache["rpy"].copy()   # roll, pitch, yaw in radians — for flip diagnosis
         return info
 
     # ══════════════════════════════════════════════════════════════════════════

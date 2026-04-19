@@ -35,6 +35,9 @@ from envs import DroneRacingEnv
 from envs.reward import WORLD_BOUNDS
 from train import GateObsExtractor, FEATURES_DIM
 
+# ── Hyper-parameters ──────────────────────────────────────────────────────────
+
+EVAL_DIR = "./eval_trajectories"
 
 # ── Reward breakdown keys (must match reward.py) ──────────────────────────────
 
@@ -142,9 +145,13 @@ def _update_drone_pov_camera(env, client: int) -> None:
     fwd    = np.array([np.cos(yaw), np.sin(yaw), 0.0])
     target = (pos + fwd * _POV_DIST).tolist()
 
+    # PyBullet places the camera AT azimuth cameraYaw relative to the target,
+    # so the look direction is -(cam_pos − target), i.e. opposite to cameraYaw.
+    # Adding 180° flips the azimuth so the camera looks in the drone's forward
+    # direction while remaining positioned at the drone's centre of mass.
     p.resetDebugVisualizerCamera(
         cameraDistance       = _POV_DIST,
-        cameraYaw            = float(np.degrees(yaw)),
+        cameraYaw            = float(np.degrees(yaw) + 180),
         cameraPitch          = 0.0,
         cameraTargetPosition = target,
         physicsClientId      = client,
@@ -177,6 +184,135 @@ def _draw_oob_wireframe(client: int) -> None:
             lifeTime       = 0,             # 0 = persist until removed
             physicsClientId = client,
         )
+
+
+# ── Trajectory diagnostic plot ───────────────────────────────────────────────
+
+def _save_traj_plot(
+    traj:      dict,
+    ep_num:    int,
+    gates:     list,    # List[Gate] snapshot for this episode (offset already applied)
+    num_gates: int,
+) -> None:
+    """
+    Save a 3-panel diagnostic PNG for one episode.
+
+    Panel 1 — Bird's-eye XY trajectory
+        Flight path coloured by which gate is being targeted.
+        Gate openings (thick bars) and exit-normal arrows drawn.
+        Flip location marked with a red ×.
+
+    Panel 2 — Roll & Pitch over time
+        Both in degrees, with ±FLIP_THRESHOLD dashed lines and
+        vertical markers where each gate was passed.
+
+    Panel 3 — Angular velocity magnitude ‖ω‖ over time
+        Shows whether instability builds gradually or spikes suddenly.
+
+    All three panels share the same step axis so they can be read in sync.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")          # non-interactive — works headless
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("[plot] matplotlib not installed — pip install matplotlib")
+        return
+
+    from envs.gate_manager import HALF_OPEN_W
+    from envs.reward import RewardComputer
+
+    pos      = np.array(traj["pos"],        dtype=float)   # (N, 3)
+    rpy      = np.array(traj["rpy"],        dtype=float)   # (N, 3) radians
+    ang_sq   = np.array(traj["ang_vel_sq"], dtype=float)   # (N,)
+    g_idx    = np.array(traj["gate_idx"],   dtype=int)     # (N,)
+    steps    = np.arange(len(pos))
+
+    flip_thresh_deg = np.rad2deg(RewardComputer.FLIP_THRESHOLD)
+
+    # Steps where the target gate advanced (gate passage events)
+    gate_pass_steps = list(np.where(np.diff(g_idx) > 0)[0])
+    # First step where the flip penalty fired (None if clean episode)
+    flip_step = next((i for i, f in enumerate(traj["flip_fired"]) if f), None)
+
+    seg_colors = ["tab:cyan", "tab:green", "tab:orange", "tab:red", "tab:purple", "tab:brown"]
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 13))
+    fig.suptitle(f"Episode {ep_num} — Diagnostic Trajectory", fontsize=13, fontweight="bold")
+
+    # ── Panel 1: Bird's-eye XY ──────────────────────────────────────────
+    ax = axes[0]
+    for seg in range(num_gates + 1):
+        mask = g_idx == seg
+        if not np.any(mask):
+            continue
+        color = seg_colors[seg % len(seg_colors)]
+        label = (f"→ G{seg + 1}" if seg < num_gates else "post-last")
+        ax.plot(pos[mask, 0], pos[mask, 1], color=color, lw=1.8, label=label)
+    ax.plot(pos[0, 0], pos[0, 1], "g^", ms=8, zorder=5, label="spawn")
+    if flip_step is not None:
+        ax.plot(pos[flip_step, 0], pos[flip_step, 1],
+                "rx", ms=14, mew=2.5, zorder=6, label=f"flip (step {flip_step})")
+    for gate in gates:
+        gx, gy = gate.position[0], gate.position[1]
+        right = np.array([np.cos(gate.yaw_rad), np.sin(gate.yaw_rad)])
+        p1 = np.array([gx, gy]) - right * HALF_OPEN_W
+        p2 = np.array([gx, gy]) + right * HALF_OPEN_W
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], "k-", lw=3, zorder=4)
+        ax.annotate(gate.label, (gx, gy), fontsize=9, fontweight="bold",
+                    ha="center", va="bottom",
+                    xytext=(0, 7), textcoords="offset points")
+        ax.annotate("",
+                    xy=(gx + gate.normal[0] * 0.6, gy + gate.normal[1] * 0.6),
+                    xytext=(gx, gy),
+                    arrowprops=dict(arrowstyle="->", color="k", lw=1.5))
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.set_title("Bird's-eye trajectory — colour = current gate target")
+    ax.grid(True, alpha=0.3)
+
+    # ── Panel 2: Roll & Pitch ───────────────────────────────────────────
+    ax = axes[1]
+    roll_deg  = np.rad2deg(rpy[:, 0])
+    pitch_deg = np.rad2deg(rpy[:, 1])
+    ax.plot(steps, roll_deg,  color="tab:blue",   lw=1.5, label="roll")
+    ax.plot(steps, pitch_deg, color="tab:orange",  lw=1.5, label="pitch")
+    ax.axhline( flip_thresh_deg, color="red", ls="--", lw=1.2,
+                label=f"flip threshold ±{flip_thresh_deg:.0f}°")
+    ax.axhline(-flip_thresh_deg, color="red", ls="--", lw=1.2)
+    ax.axhline(0, color="gray", ls=":", lw=0.7)
+    for s in gate_pass_steps:
+        ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
+    if flip_step is not None:
+        ax.axvline(flip_step, color="red", lw=1.5, alpha=0.6)
+    ax.set_xlabel("step")
+    ax.set_ylabel("degrees")
+    ax.set_title("Roll & Pitch  (green verticals = gate passages, red vertical = flip)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # ── Panel 3: Angular velocity magnitude ────────────────────────────
+    ax = axes[2]
+    omega = np.sqrt(np.maximum(ang_sq, 0.0))
+    ax.plot(steps, omega, color="tab:red", lw=1.5, label="‖ω‖")
+    ax.fill_between(steps, omega, alpha=0.15, color="tab:red")
+    for s in gate_pass_steps:
+        ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
+    if flip_step is not None:
+        ax.axvline(flip_step, color="red", lw=1.5, alpha=0.6, label="flip")
+    ax.set_xlabel("step")
+    ax.set_ylabel("rad/s")
+    ax.set_title("Angular velocity magnitude ‖ω‖  (green verticals = gate passages)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    out_path = f"{EVAL_DIR}/eval_traj_ep{ep_num}.png"
+    plt.savefig(out_path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[plot] Trajectory figure saved → {out_path}")
 
 
 # ── Statistics helper ─────────────────────────────────────────────────────────
@@ -278,11 +414,28 @@ def evaluate(args: argparse.Namespace) -> None:
         stats = EpisodeStats(ep_num=ep)
         done  = False
 
+        # Snapshot active gates after reset (gate_offset already applied).
+        snap_gates = list(env._gate_manager.gates)
+
+        traj: dict = {
+            "pos":        [],
+            "rpy":        [],
+            "ang_vel_sq": [],
+            "gate_idx":   [],
+            "flip_fired": [],
+        }
+
         while not done:
             action, _states = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             stats.update(reward, info, terminated, truncated)
             done = terminated or truncated
+            if args.plot and "drone_pos" in info:
+                traj["pos"].append(info["drone_pos"])
+                traj["rpy"].append(info["drone_rpy"])
+                traj["ang_vel_sq"].append(info.get("ang_vel_sq", 0.0))
+                traj["gate_idx"].append(info.get("current_gate_idx", 0))
+                traj["flip_fired"].append(bool(info.get("flip", False)))
             if ep == 1:
                 gif_frames.append(env._render_ego_camera())
             pov_mode = _handle_camera(env.CLIENT, pov_mode)
@@ -296,6 +449,9 @@ def evaluate(args: argparse.Namespace) -> None:
         if stats.lap_complete:
             laps_completed += 1
         all_breakdowns.append(stats.breakdown)
+
+        if args.plot and traj["pos"]:
+            _save_traj_plot(traj, ep, snap_gates, args.num_gates)
 
         if ep == 1 and gif_frames:
             gif_path = "eval_ego.gif"
@@ -371,5 +527,12 @@ if __name__ == "__main__":
         default = None,
         metavar = ("DX", "DY", "DZ"),
         help    = "Shift all gates by (dx, dy, dz) metres — used to test generalisation",
+    )
+    parser.add_argument(
+        "--plot",
+        action  = "store_true",
+        default = False,
+        help    = "Save a 3-panel diagnostic figure per episode: XY path, roll/pitch, ang-vel "
+                  "(requires matplotlib; saved as eval_traj_ep<N>.png)",
     )
     evaluate(parser.parse_args())
