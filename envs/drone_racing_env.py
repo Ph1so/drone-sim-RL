@@ -112,6 +112,7 @@ class DroneRacingEnv(BaseAviary):
         # Per-step cache (populated once, read by reward/term/info methods)
         self._step_cache: dict = {}
         self._episode_steps: int = 0
+        self._last_action: np.ndarray = np.zeros(4, dtype=np.float32)
 
         super().__init__(
             drone_model       = DroneModel.CF2X,
@@ -191,6 +192,7 @@ class DroneRacingEnv(BaseAviary):
     def step(self, action):
         # Clear per-step cache at the start of each step.
         self._step_cache = {}
+        self._last_action = np.asarray(action, dtype=np.float32)
         obs, reward, terminated, truncated, info = super().step(action)
         self._episode_steps += 1
 
@@ -281,6 +283,7 @@ class DroneRacingEnv(BaseAviary):
             drone_rpy     = cache["rpy"],
             drone_lin_vel = lin_vel,
             drone_ang_vel = ang_vel,
+            action        = self._last_action,
             gate_passed   = gate_passed,
             collision     = cache["collision"],
         )
