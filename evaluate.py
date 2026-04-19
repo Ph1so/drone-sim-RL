@@ -48,6 +48,7 @@ _BREAKDOWN_KEYS = [
     ("r_gate_bonus",     "gate bonus"),
     ("r_lap_bonus",      "lap bonus"),
     ("r_tilt",           "tilt"),
+    ("r_flip",           "flip"),
     ("r_vdown",          "vdown"),
     ("r_collision",      "collision"),
     ("r_oob",            "oob"),
