@@ -18,10 +18,7 @@ Reward components
                              Penalises large action changes between consecutive steps.
 4.  Body-rate penalty      : λ₅ ‖a_t^ω‖²
    (r_body_rate)            Penalises large roll/pitch/yaw commands.
-5.  Ang-vel penalty        : λ₆ ‖ω‖²
-   (r_ang_vel)              Penalises actual physical angular velocity — directly
-                             discourages post-gate spinning/tumbling.
-6.  Gate passage bonus     : flat GATE_PASS_BONUS per gate cleared.
+5.  Gate passage bonus     : flat GATE_PASS_BONUS per gate cleared.
    (r_gate_bonus)           Distinguishes "flew through the opening" from "crashed into
                              the frame" — r_prog alone cannot make this distinction since
                              it only sees scalar distance to the gate centre.
@@ -60,8 +57,6 @@ class RewardComputer:
     SIGMA_PERC:    float = 0.5    # perception: angular bandwidth (rad, ≈28°)
     LAMBDA_4:      float = -2e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
     LAMBDA_5:      float = -1e-4   # body-rate: ‖a_t^ω‖² penalty weight
-    LAMBDA_6:      float = -0.02   # ang-vel: ‖ω‖² penalty weight (physical rotation)
-
     # ── Gate passage bonus ────────────────────────────────────────────────
     GATE_PASS_BONUS:    float = 5.0     # flat per-gate (not escalating) — just enough
                                         # to distinguish passage from near-miss/collision
@@ -85,8 +80,8 @@ class RewardComputer:
         self,
         drone_pos:     np.ndarray,
         drone_rpy:     np.ndarray,
-        drone_lin_vel: np.ndarray,   # unused by Swift formulation; kept for API compat
-        drone_ang_vel: np.ndarray,   # unused by Swift formulation; kept for API compat
+        drone_lin_vel: np.ndarray,   # unused; kept for API compat
+        drone_ang_vel: np.ndarray,   # unused; kept for API compat
         action:        np.ndarray,
         gate_passed:   bool,
         collision:     bool,
@@ -144,15 +139,7 @@ class RewardComputer:
         r_body_rate  = self.LAMBDA_5 * float(np.dot(omega_cmd, omega_cmd))
         info["r_body_rate"] = round(r_body_rate, 6)
 
-        # ── 5. Angular velocity penalty ───────────────────────────────────
-        # r_ang_vel = λ₆ · ‖ω‖²  (actual physical rotation, not commanded)
-        # Directly penalises spinning/tumbling regardless of what action caused it.
-        ang_sq    = float(np.dot(drone_ang_vel, drone_ang_vel))
-        r_ang_vel = self.LAMBDA_6 * ang_sq
-        info["ang_vel_sq"] = round(ang_sq, 4)
-        info["r_ang_vel"]  = round(r_ang_vel, 6)
-
-        # ── 6. Gate passage bonus ─────────────────────────────────────────────
+        # ── 5. Gate passage bonus ─────────────────────────────────────────────
         # Flat (non-escalating) bonus that fires only when the drone actually
         # passes through the gate opening.  r_prog cannot distinguish "close to
         # gate centre" from "through the gate" because it only sees scalar
@@ -175,7 +162,7 @@ class RewardComputer:
             r_oob                = self.CRASH_PENALTY
             info["out_of_bounds"] = True
 
-        reward = r_prog + r_perc + r_jerk + r_body_rate + r_ang_vel + r_gate_bonus + r_collision + r_oob
+        reward = r_prog + r_perc + r_jerk + r_body_rate + r_gate_bonus + r_collision + r_oob
 
         info["num_gates_passed"] = self._gm.num_passed
         info.update({

@@ -134,7 +134,6 @@ Based on *Champion-level drone racing using deep reinforcement learning* (Kaufma
 | Gate passage bonus | flat `+5.0` per gate cleared | — |
 | Jerk penalty | `−‖a_t − a_{t-1}‖²` | λ₄ = 2×10⁻⁴ |
 | Body-rate penalty | `−‖a_t^ω‖²` (roll/pitch/yaw channels) | λ₅ = 1×10⁻⁴ |
-| Ang-vel penalty | `−‖ω‖²` (physical angular velocity) | λ₆ = 0.02 |
 | Crash / Out-of-bounds | `−50` + episode ends | — |
 
 No escalating gate bonuses or lap-completion bonus. The flat gate bonus (5.0) distinguishes "flew through the opening" from "crashed into the frame" — `r_prog` only sees scalar distance and cannot make this distinction. Gate transitions reset `_prev_dist` to avoid a negative spike when the target switches to the next (farther) gate.

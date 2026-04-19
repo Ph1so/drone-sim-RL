@@ -113,7 +113,6 @@ target switches to the next (farther) gate.
 | Gate passage bonus | flat `+5.0` per gate cleared | — |
 | Jerk penalty | `−‖a_t − a_{t-1}‖²` | λ₄ = 2×10⁻⁴ |
 | Body-rate penalty | `−‖a_t^ω‖²` (roll/pitch/yaw channels) | λ₅ = 1×10⁻⁴ |
-| Ang-vel penalty | `−‖ω‖²` (physical angular velocity) | λ₆ = 0.02 |
 | Crash / Out-of-bounds | `−50` + episode ends | — |
 
 ## Racecourse

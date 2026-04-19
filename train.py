@@ -266,7 +266,6 @@ def main(args: argparse.Namespace) -> None:
     print(f"    Penalties")
     print(f"      jerk             {rc.LAMBDA_4} × ‖Δa‖²")
     print(f"      body rate        {rc.LAMBDA_5} × ‖a^ω‖²")
-    print(f"      ang vel          {rc.LAMBDA_6} × ‖ω‖²")
     print(f"      crash / OOB      {rc.CRASH_PENALTY} (binary)")
     print(f"{'='*60}\n")
 
