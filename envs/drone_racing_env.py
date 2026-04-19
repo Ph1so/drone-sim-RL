@@ -293,6 +293,7 @@ class DroneRacingEnv(BaseAviary):
         return self._reward_computer.is_terminated(
             drone_pos = cache["pos"],
             collision = cache["collision"],
+            drone_rpy = cache["rpy"],
         )
 
     # ------------------------------------------------------------------

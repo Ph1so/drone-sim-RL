@@ -52,12 +52,14 @@ class RewardComputer:
     GATE_BASE_BONUS:       float = 150.0  # multiplied by num_gates_cleared (escalating; raised from 80)
     LAP_COMPLETE_BONUS:    float = 500.0
     TIME_PENALTY:          float = -0.1   # per step
-    TILT_THRESHOLD:        float = np.deg2rad(45)  # combined roll+pitch limit
-    TILT_PENALTY_SCALE:    float = -0.5
+    TILT_THRESHOLD:        float = np.deg2rad(40)  # combined |roll|+|pitch| limit; lowered from 45° — 40° still allows tight turns
+    TILT_PENALTY_SCALE:    float = -2.0            # raised from -0.5; at 90° pitch: -2.0*(1.57-0.70)≈-1.75/step vs old -0.39/step
+    FLIP_THRESHOLD:        float = np.deg2rad(80)  # per-axis limit; episode terminates + penalty fires if either roll or pitch exceeds this
+    FLIP_PENALTY:          float = -200.0          # one-shot terminal penalty for flip; makes catapult strategy impossible — episode ends before reaching gate
     ANG_VEL_PENALTY_SCALE: float = -0.05  # × ||omega||^2 per step — raised from -0.02; at 38 rad/s tumbling costs ~72/step vs ~29 before, must exceed velocity-progress gain
     ALT_ALIGN_SCALE:       float = -2.0   # × |drone_z − gate_z| per step — reduced from -4.0; -4.0 caused extreme pitch-up to minimize altitude penalty quickly
     VDOWN_PENALTY_SCALE:   float = 0.0    # disabled — alt_align handles altitude; vdown caused asymmetric cliff below gate_z
-    COLLISION_PENALTY:     float = -300.0
+    COLLISION_PENALTY:     float = -500.0  # raised from -300; crashing was still net-positive for catapult strategy
     OOB_PENALTY:           float = -50.0
 
     def __init__(self, gate_manager: GateManager) -> None:
@@ -89,6 +91,7 @@ class RewardComputer:
         r_gate_bonus     = 0.0
         r_lap_bonus      = 0.0
         r_tilt           = 0.0
+        r_flip           = 0.0
         r_ang_vel        = 0.0
         r_alt_align      = 0.0
         r_vdown          = 0.0
@@ -155,6 +158,15 @@ class RewardComputer:
             r_tilt = self.TILT_PENALTY_SCALE * (tilt - self.TILT_THRESHOLD)
             info["tilt_penalty"] = True
 
+        # 5e. Flip penalty — fires on the terminal step when either roll or pitch
+        #     exceeds FLIP_THRESHOLD (80°).  Because is_terminated() also checks
+        #     this condition, this penalty fires exactly once per flipped episode.
+        #     Makes the catapult-and-crash strategy net-negative even before
+        #     the collision penalty is considered.
+        if abs(drone_rpy[0]) > self.FLIP_THRESHOLD or abs(drone_rpy[1]) > self.FLIP_THRESHOLD:
+            r_flip = self.FLIP_PENALTY
+            info["flip"] = True
+
         # 5b. Angular velocity penalty — quadratic, punishes spinning/wobbling.
         #     Kept small so rapid banking for tight turns remains affordable.
         ang_sq    = float(np.dot(drone_ang_vel, drone_ang_vel))
@@ -191,7 +203,7 @@ class RewardComputer:
 
         reward = (
             r_time + r_vel_progress + r_proximity + r_heading + r_vel_gate_align
-            + r_gate_bonus + r_lap_bonus + r_tilt + r_ang_vel + r_alt_align
+            + r_gate_bonus + r_lap_bonus + r_tilt + r_flip + r_ang_vel + r_alt_align
             + r_vdown + r_collision + r_oob
         )
 
@@ -205,6 +217,7 @@ class RewardComputer:
             "r_gate_bonus":     r_gate_bonus,
             "r_lap_bonus":      r_lap_bonus,
             "r_tilt":           r_tilt,
+            "r_flip":           r_flip,
             "r_ang_vel":        r_ang_vel,
             "r_alt_align":      r_alt_align,
             "r_vdown":          r_vdown,
@@ -214,13 +227,21 @@ class RewardComputer:
         return float(reward), info
 
     # ------------------------------------------------------------------
-    def is_terminated(self, drone_pos: np.ndarray, collision: bool) -> bool:
-        """Episode ends on collision, OOB, or lap completion."""
-        return (
-            collision
-            or self._is_oob(drone_pos)
-            or self._gm.lap_complete
+    def is_terminated(
+        self,
+        drone_pos:  np.ndarray,
+        collision:  bool,
+        drone_rpy:  np.ndarray | None = None,
+    ) -> bool:
+        """Episode ends on collision, OOB, lap completion, or flip past FLIP_THRESHOLD."""
+        flip = (
+            drone_rpy is not None
+            and (
+                abs(drone_rpy[0]) > self.FLIP_THRESHOLD
+                or abs(drone_rpy[1]) > self.FLIP_THRESHOLD
+            )
         )
+        return collision or self._is_oob(drone_pos) or self._gm.lap_complete or flip
 
     @staticmethod
     def _is_oob(pos: np.ndarray) -> bool:
