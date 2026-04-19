@@ -454,7 +454,7 @@ def evaluate(args: argparse.Namespace) -> None:
             _save_traj_plot(traj, ep, snap_gates, args.num_gates)
 
         if ep == 1 and gif_frames:
-            gif_path = "eval_ego.gif"
+            gif_path = f"{EVAL_DIR}/eval_ego.gif"
             images = [Image.fromarray(f) for f in gif_frames]
             images[0].save(
                 gif_path,
