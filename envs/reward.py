@@ -21,7 +21,12 @@ Reward components
 5.  Ang-vel penalty        : λ₆ ‖ω‖²
    (r_ang_vel)              Penalises actual physical angular velocity — directly
                              discourages post-gate spinning/tumbling.
-6.  Crash/OOB penalty      : binary, terminates episode
+6.  Gate passage bonus     : flat GATE_PASS_BONUS per gate cleared.
+   (r_gate_bonus)           Distinguishes "flew through the opening" from "crashed into
+                             the frame" — r_prog alone cannot make this distinction since
+                             it only sees scalar distance to the gate centre.
+                             Kept small (5.0) so it never dominates r_prog.
+7.  Crash/OOB penalty      : binary, terminates episode
 """
 
 from __future__ import annotations
@@ -56,6 +61,10 @@ class RewardComputer:
     LAMBDA_4:      float = -2e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
     LAMBDA_5:      float = -1e-4   # body-rate: ‖a_t^ω‖² penalty weight
     LAMBDA_6:      float = -0.02   # ang-vel: ‖ω‖² penalty weight (physical rotation)
+
+    # ── Gate passage bonus ────────────────────────────────────────────────
+    GATE_PASS_BONUS:    float = 5.0     # flat per-gate (not escalating) — just enough
+                                        # to distinguish passage from near-miss/collision
 
     # ── Terminal rewards ───────────────────────────────────────────────────
     CRASH_PENALTY:      float = -50.0   # collision OR out-of-bounds
@@ -143,9 +152,16 @@ class RewardComputer:
         info["ang_vel_sq"] = round(ang_sq, 4)
         info["r_ang_vel"]  = round(r_ang_vel, 6)
 
-        # ── 6. Gate passage marker (no bonus — r_prog is the sole progress signal)
+        # ── 6. Gate passage bonus ─────────────────────────────────────────────
+        # Flat (non-escalating) bonus that fires only when the drone actually
+        # passes through the gate opening.  r_prog cannot distinguish "close to
+        # gate centre" from "through the gate" because it only sees scalar
+        # distance.  This small bonus provides that missing binary signal.
+        r_gate_bonus = 0.0
         if gate_passed:
-            info["gate_passed"] = True
+            r_gate_bonus         = self.GATE_PASS_BONUS
+            info["gate_passed"]  = True
+            info["r_gate_bonus"] = r_gate_bonus
             if self._gm.lap_complete:
                 info["lap_complete"] = True
 
@@ -159,7 +175,7 @@ class RewardComputer:
             r_oob                = self.CRASH_PENALTY
             info["out_of_bounds"] = True
 
-        reward = r_prog + r_perc + r_jerk + r_body_rate + r_ang_vel + r_collision + r_oob
+        reward = r_prog + r_perc + r_jerk + r_body_rate + r_ang_vel + r_gate_bonus + r_collision + r_oob
 
         info["num_gates_passed"] = self._gm.num_passed
         info.update({

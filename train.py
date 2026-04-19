@@ -262,6 +262,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"    Rewards")
     print(f"      progress         {rc.LAMBDA_1} × (d_prev − d_curr)")
     print(f"      perception       {rc.LAMBDA_2} × exp(−δ_cam / {rc.SIGMA_PERC})")
+    print(f"      gate passage     {rc.GATE_PASS_BONUS} (flat, per gate)")
     print(f"    Penalties")
     print(f"      jerk             {rc.LAMBDA_4} × ‖Δa‖²")
     print(f"      body rate        {rc.LAMBDA_5} × ‖a^ω‖²")

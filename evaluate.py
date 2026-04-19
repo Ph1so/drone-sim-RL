@@ -42,13 +42,14 @@ EVAL_DIR = "./eval_trajectories"
 # ── Reward breakdown keys (must match reward.py) ──────────────────────────────
 
 _BREAKDOWN_KEYS = [
-    ("r_prog",      "progress"),
-    ("r_perc",      "perception"),
-    ("r_jerk",      "jerk"),
-    ("r_body_rate", "body rate"),
-    ("r_ang_vel",   "ang vel"),
-    ("r_collision", "collision"),
-    ("r_oob",       "oob"),
+    ("r_prog",       "progress"),
+    ("r_perc",       "perception"),
+    ("r_jerk",       "jerk"),
+    ("r_body_rate",  "body rate"),
+    ("r_ang_vel",    "ang vel"),
+    ("r_gate_bonus", "gate bonus"),
+    ("r_collision",  "collision"),
+    ("r_oob",        "oob"),
 ]
 
 

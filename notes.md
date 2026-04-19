@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-04-19 — Add flat gate passage bonus (GATE_PASS_BONUS = 5.0)
+
+### Problem
+After removing all gate bonuses, the drone reverted to catapulting at gate 1 and missing.
+Root cause: `r_prog` only sees scalar distance to the gate **centre**. It cannot distinguish:
+- Flying cleanly through the gate opening (correct)
+- Crashing into the gate frame at speed (incorrect, gets collision penalty)
+- Hovering near the gate centre without passing (exploits r_prog without passing)
+
+The old escalating gate bonus (150×n) was doing double duty: incentivising passage AND
+acting as the only signal distinguishing "through the opening" from "close but not through."
+Pure distance-delta without any gate signal leaves the agent no reason to aim for the opening
+specifically over any other path that reduces distance to the centre.
+
+### Change (`envs/reward.py`)
+Added `GATE_PASS_BONUS = 5.0` — flat (non-escalating) bonus per gate cleared.
+
+- **Flat, not escalating**: avoids the previous problem where later gates dominated
+  the return and the agent optimised gate count over flight quality.
+- **Small (5.0)**: ~2× the r_prog earned on a single gate approach. Large enough to be
+  a clear signal, small enough never to dominate the episode return.
+- **Not a lap bonus**: no additional reward for completing a full lap — lap completion
+  is already captured by accumulating 5× gate bonuses.
+
+### Resume vs. scratch
+Start from scratch. The previous best_model.zip was trained with escalating gate bonuses
+(150×n) as the dominant signal. Its value function expects bonuses that no longer exist,
+producing corrupted advantage estimates. The catapult-toward-gate prior is strong and
+harmful — unlearning it is slower than relearning from a clean slate.
+
+---
+
 ## 2026-04-19 — Remove gate/lap bonuses, fix transition spike, add ang-vel penalty
 
 ### Problem
