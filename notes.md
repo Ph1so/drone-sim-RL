@@ -2,6 +2,81 @@
 
 ---
 
+## 2026-04-19 — Remove gate/lap bonuses, fix transition spike, add ang-vel penalty
+
+### Problem
+After 3M steps with the Swift reward the agent learned to spin wildly after gate 3 while
+still tumbling toward gate 4. Three related root causes:
+
+1. **Gate bonuses dwarfed every other signal.** Gate bonuses (150+300+450 = 900 over 3
+   gates) were ~1500× larger than the combined jerk + body-rate penalties (~−0.6 max).
+   The agent optimised gate count and treated smoothness penalties as numerical noise.
+   This is the same reward-domination problem that broke earlier versions — just with
+   different terms overwhelming different penalties.
+
+2. **Actual spinning was never penalised.** Swift's body-rate penalty (λ₅) penalises the
+   *commanded* roll/pitch/yaw in the action, not the resulting physical rotation. The drone's
+   dynamics amplified commands into ±75° oscillations, but the reward never saw it.
+   Spinning was effectively free as long as r_prog stayed positive (which it did — the
+   tumbling arc still reduced distance to G4).
+
+3. **Distance-delta produced a large negative spike at gate transitions.** When a gate is
+   passed, `gate_manager.update()` switches the target to the next gate *before* `compute()`
+   runs, so `curr_dist` jumps from ~0 → large. This made r_prog = λ₁ × (0 − large) = a
+   big negative reward on every gate passage. The gate bonus had been inadvertently
+   masking this bug.
+
+### Changes (`envs/reward.py`)
+
+**Remove gate/lap bonuses**
+- Removed `GATE_BASE_BONUS`, `LAP_COMPLETE_BONUS`, `r_gate_bonus`, `r_lap_bonus`
+- Swift does not include these. With distance-delta as the primary signal, the agent is
+  rewarded every step it moves toward a gate — no sparse bonus needed.
+- Removing them also exposes the jerk/body-rate penalties which were previously invisible.
+
+**Fix gate-transition spike**
+- Added `if gate_passed: self._prev_dist = None` before the progress computation
+- On the transition step, `_prev_dist` is None → r_prog = 0 (neutral) instead of a large
+  negative spike
+- Next step, _prev_dist is set to the new (large) distance, giving large positive r_prog
+  as the drone approaches the new gate — correct behaviour
+
+**Add angular velocity penalty (λ₆ = −0.02 on ‖ω‖²)**
+- Directly penalises *physical* angular velocity, not just commanded rates
+- Sizing: at ±75° oscillation ‖ω‖² ≈ 10–20 rad²/s² → costs −0.2 to −0.4/step
+  vs r_prog ≈ +0.3/step — spinning is now unprofitable
+- Tight controlled banking (‖ω‖² ≈ 1–2) costs only −0.02–0.04/step — affordable
+
+**Raise crash penalty from −5 → −50**
+- Without gate bonuses dominating the return, the crash penalty needs to be meaningful
+  relative to r_prog. A 3-gate episode earns ~30–50 in total r_prog; −5 was negligible.
+  −50 ensures a crash always costs more than the agent can earn in progress alone.
+
+### Updated reward table
+
+| Term | Formula | Weight |
+|---|---|---|
+| `r_prog` | `λ₁ [d_{t-1} − d_t]` | λ₁ = 1.0 |
+| `r_perc` | `λ₂ exp(−δ_cam / σ)` | λ₂ = 0.02 |
+| `r_jerk` | `λ₄ ‖a_t − a_{t-1}‖²` | λ₄ = −2×10⁻⁴ |
+| `r_body_rate` | `λ₅ ‖a_t^ω‖²` | λ₅ = −1×10⁻⁴ |
+| `r_ang_vel` | `λ₆ ‖ω‖²` | λ₆ = −0.02 |
+| Crash / OOB | binary | −50 |
+
+### Resume command
+```bash
+python train.py --resume best_model.zip
+```
+
+### Expected outcome
+- Spinning is directly penalised; the agent must trade off angular velocity against
+  progress. Clean straight-line flight to the gate is the highest-return trajectory.
+- Gate transitions no longer produce a negative spike — progress signal is smooth
+  across gate passages.
+- Crash penalty is meaningful relative to r_prog; the agent cannot ignore it.
+
+---
+
 ## 2026-04-19 — Adopt Swift reward function (Kaufmann et al. 2023)
 
 ### Motivation

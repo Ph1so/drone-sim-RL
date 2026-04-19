@@ -42,20 +42,13 @@ EVAL_DIR = "./eval_trajectories"
 # ── Reward breakdown keys (must match reward.py) ──────────────────────────────
 
 _BREAKDOWN_KEYS = [
-    ("r_vel_progress",   "vel progress"),
-    ("r_alt_align",      "alt align"),
-    ("r_ang_vel",        "ang vel"),
-    ("r_time",           "time"),
-    ("r_proximity",      "proximity"),
-    ("r_heading",        "heading"),
-    ("r_vel_gate_align", "vel gate align"),
-    ("r_gate_bonus",     "gate bonus"),
-    ("r_lap_bonus",      "lap bonus"),
-    ("r_tilt",           "tilt"),
-    ("r_flip",           "flip"),
-    ("r_vdown",          "vdown"),
-    ("r_collision",      "collision"),
-    ("r_oob",            "oob"),
+    ("r_prog",      "progress"),
+    ("r_perc",      "perception"),
+    ("r_jerk",      "jerk"),
+    ("r_body_rate", "body rate"),
+    ("r_ang_vel",   "ang vel"),
+    ("r_collision", "collision"),
+    ("r_oob",       "oob"),
 ]
 
 
@@ -385,7 +378,7 @@ class EpisodeStats:
         for k, label in _BREAKDOWN_KEYS:
             v = self.breakdown[k]
             if v != 0.0:
-                print(f"             {label:<18} {v:+10.1f}")
+                print(f"             {label:<18} {v:+10.4f}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -505,7 +498,8 @@ def evaluate(args: argparse.Namespace) -> None:
                 traj["pos"].append(info["drone_pos"])
                 traj["rpy"].append(info["drone_rpy"])
                 traj["lin_vel"].append(info["drone_lin_vel"])
-                traj["ang_vel_sq"].append(info.get("ang_vel_sq", 0.0))
+                ang_vel = info.get("drone_ang_vel", np.zeros(3))
+                traj["ang_vel_sq"].append(float(np.dot(ang_vel, ang_vel)))
                 traj["gate_idx"].append(info.get("current_gate_idx", 0))
                 traj["flip_fired"].append(bool(info.get("flip", False)))
             if ep == 1:
@@ -550,7 +544,7 @@ def evaluate(args: argparse.Namespace) -> None:
     for k, label in _BREAKDOWN_KEYS:
         mean_v = np.mean([bd[k] for bd in all_breakdowns])
         if mean_v != 0.0:
-            print(f"    {label:<18} {mean_v:+10.1f}")
+            print(f"    {label:<18} {mean_v:+10.4f}")
     print(f"{'='*60}\n")
 
 

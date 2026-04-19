@@ -312,6 +312,7 @@ class DroneRacingEnv(BaseAviary):
         info["drone_pos"]        = cache["pos"].copy()   # world-frame (3,) — for trajectory plots
         info["drone_rpy"]        = cache["rpy"].copy()   # roll, pitch, yaw in radians — for flip diagnosis
         info["drone_lin_vel"]    = cache["state"][10:13].copy()   # world-frame linear velocity (m/s)
+        info["drone_ang_vel"]    = cache["state"][13:16].copy()   # world-frame angular velocity (rad/s)
         return info
 
     # ══════════════════════════════════════════════════════════════════════════

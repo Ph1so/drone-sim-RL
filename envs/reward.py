@@ -8,6 +8,9 @@ Reward components
 -----------------
 1.  Progress (r_prog)      : λ₁ [d_{t-1} − d_t]
                              Rewards reduction in distance to the next gate centre.
+                             _prev_dist is reset to None on gate passage to avoid a
+                             large negative spike when the target switches to the next
+                             (farther) gate.
 2.  Perception (r_perc)    : λ₂ exp(−δ_cam / σ_perc)
                              Rewards keeping the next gate centred in the body-frame
                              forward direction (proxy for camera FOV in simulation).
@@ -15,9 +18,10 @@ Reward components
                              Penalises large action changes between consecutive steps.
 4.  Body-rate penalty      : λ₅ ‖a_t^ω‖²
    (r_body_rate)            Penalises large roll/pitch/yaw commands.
-5.  Gate bonus             : escalating per-gate reward (GATE_BASE_BONUS × gates_cleared)
-6.  Lap completion bonus
-7.  Crash/OOB penalty      : binary, terminates episode
+5.  Ang-vel penalty        : λ₆ ‖ω‖²
+   (r_ang_vel)              Penalises actual physical angular velocity — directly
+                             discourages post-gate spinning/tumbling.
+6.  Crash/OOB penalty      : binary, terminates episode
 """
 
 from __future__ import annotations
@@ -49,13 +53,12 @@ class RewardComputer:
     LAMBDA_1:      float = 1.0    # progress: distance-delta weight
     LAMBDA_2:      float = 0.02   # perception: gate-in-FOV weight
     SIGMA_PERC:    float = 0.5    # perception: angular bandwidth (rad, ≈28°)
-    LAMBDA_4:      float = -2e-4  # jerk: ‖a_t − a_{t-1}‖² penalty weight
-    LAMBDA_5:      float = -1e-4  # body-rate: ‖a_t^ω‖² penalty weight
+    LAMBDA_4:      float = -2e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
+    LAMBDA_5:      float = -1e-4   # body-rate: ‖a_t^ω‖² penalty weight
+    LAMBDA_6:      float = -0.02   # ang-vel: ‖ω‖² penalty weight (physical rotation)
 
-    # ── Sparse / terminal rewards ──────────────────────────────────────────
-    GATE_BASE_BONUS:    float = 150.0   # × num_gates_cleared (escalating)
-    LAP_COMPLETE_BONUS: float = 500.0
-    CRASH_PENALTY:      float = -5.0    # collision OR out-of-bounds (Swift §3)
+    # ── Terminal rewards ───────────────────────────────────────────────────
+    CRASH_PENALTY:      float = -50.0   # collision OR out-of-bounds
 
     def __init__(self, gate_manager: GateManager) -> None:
         self._gm           = gate_manager
@@ -83,8 +86,17 @@ class RewardComputer:
 
         # ── 1. Progress reward ────────────────────────────────────────────
         # r_prog = λ₁ [d_{t-1} − d_t]  (positive when closing in on gate)
+        #
+        # Gate-transition reset: when a gate is passed, gate_manager has already
+        # switched the target to the next (farther) gate before compute() runs.
+        # Without the reset, curr_dist would jump from ~0 → large, making
+        # r_prog = λ₁ × (0 − large) = large negative spike on every gate passage.
+        # Resetting _prev_dist to None gives 0 progress on that one step instead.
         curr_dist = self._gm.dist_to_next(drone_pos)
         info["dist_to_gate"] = round(curr_dist, 4)
+
+        if gate_passed:
+            self._prev_dist = None   # suppress transition spike
 
         r_prog = 0.0
         if self._prev_dist is not None:
@@ -123,18 +135,21 @@ class RewardComputer:
         r_body_rate  = self.LAMBDA_5 * float(np.dot(omega_cmd, omega_cmd))
         info["r_body_rate"] = round(r_body_rate, 6)
 
-        # ── 5. Gate passage bonus (escalating) ───────────────────────────
-        r_gate_bonus = 0.0
-        r_lap_bonus  = 0.0
+        # ── 5. Angular velocity penalty ───────────────────────────────────
+        # r_ang_vel = λ₆ · ‖ω‖²  (actual physical rotation, not commanded)
+        # Directly penalises spinning/tumbling regardless of what action caused it.
+        ang_sq    = float(np.dot(drone_ang_vel, drone_ang_vel))
+        r_ang_vel = self.LAMBDA_6 * ang_sq
+        info["ang_vel_sq"] = round(ang_sq, 4)
+        info["r_ang_vel"]  = round(r_ang_vel, 6)
+
+        # ── 6. Gate passage marker (no bonus — r_prog is the sole progress signal)
         if gate_passed:
-            r_gate_bonus = self.GATE_BASE_BONUS * self._gm.num_passed
             info["gate_passed"] = True
-            info["gate_bonus"]  = round(r_gate_bonus, 1)
             if self._gm.lap_complete:
-                r_lap_bonus          = self.LAP_COMPLETE_BONUS
                 info["lap_complete"] = True
 
-        # ── 6. Crash / OOB penalty ────────────────────────────────────────
+        # ── 7. Crash / OOB penalty ────────────────────────────────────────
         r_collision = 0.0
         r_oob       = 0.0
         if collision:
@@ -144,14 +159,12 @@ class RewardComputer:
             r_oob                = self.CRASH_PENALTY
             info["out_of_bounds"] = True
 
-        reward = r_prog + r_perc + r_jerk + r_body_rate + r_gate_bonus + r_lap_bonus + r_collision + r_oob
+        reward = r_prog + r_perc + r_jerk + r_body_rate + r_ang_vel + r_collision + r_oob
 
         info["num_gates_passed"] = self._gm.num_passed
         info.update({
-            "r_gate_bonus": r_gate_bonus,
-            "r_lap_bonus":  r_lap_bonus,
-            "r_collision":  r_collision,
-            "r_oob":        r_oob,
+            "r_collision": r_collision,
+            "r_oob":       r_oob,
         })
         return float(reward), info
 

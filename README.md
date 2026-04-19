@@ -133,11 +133,10 @@ Based on *Champion-level drone racing using deep reinforcement learning* (Kaufma
 | Perception | `exp(−δ_cam / σ)`, δ_cam = angle from body-fwd to gate | λ₂ = 0.02, σ = 0.5 rad |
 | Jerk penalty | `−‖a_t − a_{t-1}‖²` | λ₄ = 2×10⁻⁴ |
 | Body-rate penalty | `−‖a_t^ω‖²` (roll/pitch/yaw channels) | λ₅ = 1×10⁻⁴ |
-| Gate passage (escalating) | `150 × gates_cleared` (gate 1=150, gate 2=300, …) | — |
-| Lap completion | `+500` | — |
-| Crash / Out-of-bounds | `−5.0` + episode ends | — |
+| Ang-vel penalty | `−‖ω‖²` (physical angular velocity) | λ₆ = 0.02 |
+| Crash / Out-of-bounds | `−50` + episode ends | — |
 
-Progress reward provides dense shaping; gate bonuses add sparse signal for multi-gate sequences.
+No per-gate or lap-completion bonuses — `r_prog` provides a dense signal every step, making sparse bonuses redundant. Gate transitions reset `_prev_dist` to avoid a negative spike when the target switches to the next (farther) gate.
 
 ### Training Architecture
 
