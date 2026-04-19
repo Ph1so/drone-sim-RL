@@ -312,15 +312,28 @@ class DroneRacingEnv(BaseAviary):
     # Internal helpers
     # ══════════════════════════════════════════════════════════════════════════
 
+    # Speed injected at mid-course spawns — approximates realistic post-gate velocity.
+    # Matches the evaluation distribution (drone exits a gate with forward momentum)
+    # so the policy learns to handle the turn, not just approach from a standstill.
+    _SPAWN_SPEED: float = 2.0   # m/s along previous gate's exit normal
+
     def _teleport_to_gate_approach(self, k: int) -> None:
         """
-        Teleport the drone to just past gate k-1's exit, facing gate k, at rest.
+        Teleport the drone to just past gate k-1's exit, aligned with that gate's
+        exit direction, with realistic forward velocity.
 
-        This populates mid-course states in the PPO rollout buffer so the policy
-        receives training signal for gate transitions it would rarely reach organically.
+        Previously the drone spawned at rest already facing gate k.  That mismatch
+        caused the policy to learn "approach gate k from a standstill" rather than
+        "turn from gate k-1's exit momentum into gate k's approach axis" — the exact
+        maneuver that fails in evaluation.
 
-        The drone spawns 1.5 m along gate k-1's exit normal, at gate k-1's altitude,
-        with zero linear and angular velocity.  GateManager is fast-forwarded to k.
+        The drone now spawns:
+          - Position : 1.5 m along gate k-1's exit normal (unchanged)
+          - Yaw      : aligned with gate k-1's exit direction (was: pointing at gate k)
+          - Velocity : _SPAWN_SPEED m/s along the exit normal  (was: zero)
+          - Angular  : zero
+
+        GateManager is fast-forwarded to k.
 
         Parameters
         ----------
@@ -330,14 +343,12 @@ class DroneRacingEnv(BaseAviary):
         prev_gate = self._gate_manager.gates[k - 1]
         spawn_pos = prev_gate.position + prev_gate.normal * 1.5   # 1.5 m past exit
 
-        # Yaw faces the next target gate
-        target_gate = self._gate_manager.gates[k]
-        dx = target_gate.position[0] - spawn_pos[0]
-        dy = target_gate.position[1] - spawn_pos[1]
-        yaw = float(np.arctan2(dy, dx))
+        # Yaw aligned with the exit direction of the gate just passed.
+        # In evaluation the drone exits heading along prev_gate.normal — match that.
+        exit_yaw = float(np.arctan2(prev_gate.normal[1], prev_gate.normal[0]))
 
         quat = p.getQuaternionFromEuler(
-            [0.0, 0.0, yaw], physicsClientId=self.CLIENT
+            [0.0, 0.0, exit_yaw], physicsClientId=self.CLIENT
         )
         p.resetBasePositionAndOrientation(
             self.DRONE_IDS[0],
@@ -345,9 +356,10 @@ class DroneRacingEnv(BaseAviary):
             quat,
             physicsClientId=self.CLIENT,
         )
+        spawn_vel = (prev_gate.normal * self._SPAWN_SPEED).tolist()
         p.resetBaseVelocity(
             self.DRONE_IDS[0],
-            linearVelocity  = [0.0, 0.0, 0.0],
+            linearVelocity  = spawn_vel,
             angularVelocity = [0.0, 0.0, 0.0],
             physicsClientId = self.CLIENT,
         )

@@ -32,6 +32,7 @@ from PIL import Image
 from stable_baselines3 import PPO
 
 from envs import DroneRacingEnv
+from envs.reward import WORLD_BOUNDS
 from train import GateObsExtractor, FEATURES_DIM
 
 
@@ -57,19 +58,31 @@ _BREAKDOWN_KEYS = [
 
 # ── Camera control ────────────────────────────────────────────────────────────
 
-def _handle_camera(client: int) -> None:
+def _handle_camera(client: int, pov_mode: bool) -> bool:
     """Adjust the PyBullet debug camera based on keyboard input.
 
     Controls
     --------
-    A / D        — orbit yaw left / right
-    W / S        — tilt pitch up / down
-    Q / E        — zoom in / out
-    Arrow keys   — pan the camera target point
+    V            — toggle drone-POV / free-camera mode
+    A / D        — orbit yaw left / right   (free-camera only)
+    W / S        — tilt pitch up / down     (free-camera only)
+    Q / E        — zoom in / out            (free-camera only)
+    Arrow keys   — pan the camera target    (free-camera only)
+
+    Returns the (possibly toggled) pov_mode flag.
     """
     keys = p.getKeyboardEvents(physicsClientId=client)
     if not keys:
-        return
+        return pov_mode
+
+    # V key toggles POV mode (triggered = fires once per press, not per frame)
+    if keys.get(ord('v'), 0) & p.KEY_WAS_TRIGGERED:
+        pov_mode = not pov_mode
+        print(f"[camera] {'Drone POV' if pov_mode else 'Free camera'} mode")
+        return pov_mode
+
+    if pov_mode:
+        return pov_mode   # orbit controls are inactive in POV mode
 
     cam    = p.getDebugVisualizerCamera(physicsClientId=client)
     dist   = cam[10]
@@ -107,6 +120,63 @@ def _handle_camera(client: int) -> None:
         cameraTargetPosition = target,
         physicsClientId      = client,
     )
+    return pov_mode
+
+
+def _update_drone_pov_camera(env, client: int) -> None:
+    """Reposition the debug visualizer to a first-person view from the drone.
+
+    Places the camera at the drone's centre of mass looking along its yaw
+    heading.  Drone pitch/roll are intentionally ignored so the view stays
+    level and easy to read during aggressive manoeuvres.
+
+    PyBullet's resetDebugVisualizerCamera orbits the camera around a target
+    point at a given distance.  Setting the target 0.5 m ahead of the drone
+    and the distance to 0.5 m places the camera eye exactly at the drone.
+    """
+    state = env._getDroneStateVector(0)
+    pos   = state[0:3]
+    yaw   = float(state[9])          # rpy[2] — drone heading in radians
+
+    _POV_DIST = 0.5                  # metres — target offset and camera distance
+    fwd    = np.array([np.cos(yaw), np.sin(yaw), 0.0])
+    target = (pos + fwd * _POV_DIST).tolist()
+
+    p.resetDebugVisualizerCamera(
+        cameraDistance       = _POV_DIST,
+        cameraYaw            = float(np.degrees(yaw)),
+        cameraPitch          = 0.0,
+        cameraTargetPosition = target,
+        physicsClientId      = client,
+    )
+
+
+# ── OOB wireframe ────────────────────────────────────────────────────────────
+
+def _draw_oob_wireframe(client: int) -> None:
+    """Draw the 12 edges of the out-of-bounds WORLD_BOUNDS box as red debug lines."""
+    x0, y0, z0 = WORLD_BOUNDS[0], WORLD_BOUNDS[1], WORLD_BOUNDS[2]
+    x1, y1, z1 = WORLD_BOUNDS[3], WORLD_BOUNDS[4], WORLD_BOUNDS[5]
+
+    corners = [
+        (x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),  # bottom
+        (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1),  # top
+    ]
+    edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0),   # bottom face
+        (4, 5), (5, 6), (6, 7), (7, 4),   # top face
+        (0, 4), (1, 5), (2, 6), (3, 7),   # verticals
+    ]
+    color = [1.0, 0.2, 0.0]   # orange-red
+    for a, b in edges:
+        p.addUserDebugLine(
+            lineFromXYZ    = corners[a],
+            lineToXYZ      = corners[b],
+            lineColorRGB   = color,
+            lineWidth      = 2,
+            lifeTime       = 0,             # 0 = persist until removed
+            physicsClientId = client,
+        )
 
 
 # ── Statistics helper ─────────────────────────────────────────────────────────
@@ -196,6 +266,12 @@ def evaluate(args: argparse.Namespace) -> None:
     env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates,
                          gate_pos_offset=gate_offset)
 
+    _draw_oob_wireframe(env.CLIENT)
+
+    print("[camera] V — toggle drone POV / free-camera")
+
+    pov_mode = False   # persists across episodes; toggled by V key
+
     # ── Episode loop ──────────────────────────────────────────────────
     for ep in range(1, args.episodes + 1):
         obs, _info = env.reset()
@@ -209,7 +285,9 @@ def evaluate(args: argparse.Namespace) -> None:
             done = terminated or truncated
             if ep == 1:
                 gif_frames.append(env._render_ego_camera())
-            _handle_camera(env.CLIENT)
+            pov_mode = _handle_camera(env.CLIENT, pov_mode)
+            if pov_mode:
+                _update_drone_pov_camera(env, env.CLIENT)
             time.sleep(step_sleep)
 
         stats.print_summary(ctrl_freq=env.CTRL_FREQ)
