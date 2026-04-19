@@ -31,10 +31,6 @@ from .gate_manager import GateManager
 # x_min, y_min, z_min, x_max, y_max, z_max
 WORLD_BOUNDS = np.array([-3.0, -3.0, 0.05, 12.0, 10.0, 6.0], dtype=np.float64)
 
-# Flip termination threshold (kept for practical stability; not in Swift paper)
-_FLIP_THRESHOLD = np.deg2rad(90)
-
-
 class RewardComputer:
     """
     Swift-style reward calculator.
@@ -45,6 +41,9 @@ class RewardComputer:
 
     Must call :meth:`reset` at the start of every episode.
     """
+
+    # ── Termination threshold (kept for practical stability) ──────────────
+    FLIP_THRESHOLD: float = np.deg2rad(90)
 
     # ── Swift reward coefficients ──────────────────────────────────────────
     LAMBDA_1:      float = 1.0    # progress: distance-delta weight
@@ -167,8 +166,8 @@ class RewardComputer:
         flip = (
             drone_rpy is not None
             and (
-                abs(drone_rpy[0]) > _FLIP_THRESHOLD
-                or abs(drone_rpy[1]) > _FLIP_THRESHOLD
+                abs(drone_rpy[0]) > self.FLIP_THRESHOLD
+                or abs(drone_rpy[1]) > self.FLIP_THRESHOLD
             )
         )
         return collision or self._is_oob(drone_pos) or self._gm.lap_complete or flip

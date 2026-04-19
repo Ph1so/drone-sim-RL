@@ -2,6 +2,70 @@
 
 ---
 
+## 2026-04-19 — Adopt Swift reward function (Kaufmann et al. 2023)
+
+### Motivation
+The hand-crafted reward had grown to 14 terms across two years of patches. Many terms
+conflicted (vdown vs alt_align), others were proxies for the same objective (heading +
+vel_gate_align + proximity all rewarded "be near and face the gate"). The Swift paper
+provides a principled, minimal formulation validated at champion level — a clean reset.
+
+### Changes
+
+**`envs/reward.py` — full rewrite of reward terms**
+
+Removed terms:
+- `r_vel_progress` — tanh-saturated velocity projection
+- `r_proximity` — smooth ramp inside 1.5 m of gate
+- `r_heading` — yaw-forward alignment bonus
+- `r_vel_gate_align` — velocity vs gate normal alignment
+- `r_time` — per-step time penalty
+- `r_tilt` — excess roll+pitch penalty
+- `r_flip` — one-shot flip terminal penalty
+- `r_ang_vel` — quadratic angular velocity penalty
+- `r_alt_align` — altitude offset from gate
+- `r_vdown` — downward velocity penalty below gate altitude
+
+Added Swift terms:
+
+| Term | Formula | Weight |
+|---|---|---|
+| `r_prog` | `λ₁ [d_{t-1} − d_t]` | λ₁ = 1.0 |
+| `r_perc` | `λ₂ exp(−δ_cam / σ)` | λ₂ = 0.02, σ = 0.5 rad |
+| `r_jerk` | `λ₄ ‖a_t − a_{t-1}‖²` | λ₄ = −2×10⁻⁴ |
+| `r_body_rate` | `λ₅ ‖a_t^ω‖²` | λ₅ = −1×10⁻⁴ |
+
+- `r_prog` replaces velocity-projection with distance-delta; requires tracking `_prev_dist`
+- `r_perc` approximates gate-in-camera-FOV by computing the angle between body-forward
+  (from RPY) and gate-centre direction; bounded in [0, 0.02]
+- `r_jerk` penalises abrupt action changes; requires tracking `_prev_action`
+- `r_body_rate` penalises large roll/pitch/yaw commands (action[1:4])
+- Crash / OOB penalty reduced from −500 / −50 → −5.0 (Swift binary)
+- Gate escalating bonus (150 × n) and lap bonus (500) retained — not in Swift but provide
+  necessary sparse signal for the 5-gate racing task
+- Flip termination kept (practical stability; not in Swift paper which uses a flight controller)
+- `RewardComputer.reset()` now clears `_prev_dist` and `_prev_action`
+
+**`envs/drone_racing_env.py` — action forwarding**
+- Added `self._last_action = np.zeros(4)` in `__init__`
+- `step()` captures `self._last_action = np.asarray(action)` before `super().step()`
+- `_computeReward()` passes `action=self._last_action` to `compute()`
+
+### Resume command
+```bash
+python train.py --resume best_model.zip
+```
+Resume path applies `lr=5e-5` (down from 3e-4) via `custom_objects` — lets the value
+function re-calibrate to the new reward scale without shattering stable flight behavior.
+
+### Expected outcome
+- Cleaner reward signal: fewer conflicting gradients
+- Jerk + body-rate penalties encourage the smooth trajectories needed for fast lap times
+- Perception reward keeps the gate in "view" — relevant when swapping in a real CV pipeline
+- Crash-avoidance behavior may loosen initially (penalty 100× smaller); watch early collision rate
+
+---
+
 ## 2026-04-16 — Fix catapult-and-crash behavior (5 targeted changes)
 
 ### Problem

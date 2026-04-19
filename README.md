@@ -125,22 +125,19 @@ Five gates on an oval-ish lap. The drone spawns at `[0, 0, 0.3]` facing `+Y`.
 
 ### Reward Components
 
-| Component | Value |
-|---|---|
-| Velocity progress | `12.0 × tanh(dot(vel, gate_unit) / 2.0)` — saturates at ±12, no catapult incentive |
-| Proximity bonus | up to `+0.5/step` inside 1.5 m of gate |
-| Heading alignment | up to `+0.2/step` at perfect yaw alignment |
-| Velocity-gate alignment | up to `+1.0/step` when flying through gate correctly |
-| Gate passage (escalating) | `80 × gates_cleared` (gate 1=80, gate 2=160, …, gate 5=400) |
-| Lap completion | additional `+500` |
-| Time penalty | `−0.1/step` |
-| Tilt penalty | `−0.5 × (tilt − 45°)` when over threshold |
-| Angular velocity | `−0.02 × ‖ω‖²/step` |
-| Altitude alignment | `−0.4 × |drone_z − gate_z|/step` |
-| Collision | `−100` + episode ends |
-| Out-of-bounds | `−50` + episode ends |
+Based on *Champion-level drone racing using deep reinforcement learning* (Kaufmann et al., 2023).
 
-Gate 1 bonus (80) < crash penalty (100): a catapult-and-crash strategy is net-negative by design.
+| Component | Formula | Weight |
+|---|---|---|
+| Progress | `d_{t-1} − d_t` (distance delta to gate) | λ₁ = 1.0 |
+| Perception | `exp(−δ_cam / σ)`, δ_cam = angle from body-fwd to gate | λ₂ = 0.02, σ = 0.5 rad |
+| Jerk penalty | `−‖a_t − a_{t-1}‖²` | λ₄ = 2×10⁻⁴ |
+| Body-rate penalty | `−‖a_t^ω‖²` (roll/pitch/yaw channels) | λ₅ = 1×10⁻⁴ |
+| Gate passage (escalating) | `150 × gates_cleared` (gate 1=150, gate 2=300, …) | — |
+| Lap completion | `+500` | — |
+| Crash / Out-of-bounds | `−5.0` + episode ends | — |
+
+Progress reward provides dense shaping; gate bonuses add sparse signal for multi-gate sequences.
 
 ### Training Architecture
 
@@ -153,6 +150,7 @@ Gate 1 bonus (80) < crash penalty (100): a catapult-and-crash strategy is net-ne
 No CNN. The policy is a pure MLP — fast to train, trivial to run at inference.
 
 PPO hyperparameters: 4 parallel envs, `n_steps=512`, `batch_size=256`, `ent_coef=0.01`, `lr=3e-4`.
+When resuming (`--resume`), `lr` is automatically lowered to `5e-5` to stabilise the value function under the new reward scale.
 
 ### Modular Perception Design
 
