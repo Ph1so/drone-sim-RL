@@ -65,6 +65,14 @@ _ROLL_AUTH     = 0.20
 _PITCH_AUTH    = 0.20
 _YAW_AUTH      = 0.10
 
+# Temporal action smoothing — EMA low-pass filter applied between policy output
+# and the physics engine.  Alpha=1.0 disables smoothing (pass-through).
+# applied_t = α * raw_t + (1−α) * applied_{t-1}
+ACTION_SMOOTHING_ALPHA: float = 0.7
+
+# Initial applied action: T=0 → all motors at HOVER_RPM (gravity-offset), zero body rates.
+_HOVER_ACTION = np.zeros(4, dtype=np.float32)
+
 
 class DroneRacingEnv(BaseAviary):
     """
@@ -115,6 +123,8 @@ class DroneRacingEnv(BaseAviary):
         self._step_cache: dict = {}
         self._episode_steps: int = 0
         self._last_action: np.ndarray = np.zeros(4, dtype=np.float32)
+        # Last smoothed action sent to the physics engine (EMA state).
+        self._last_applied_action: np.ndarray = _HOVER_ACTION.copy()
 
         super().__init__(
             drone_model       = DroneModel.CF2X,
@@ -160,6 +170,8 @@ class DroneRacingEnv(BaseAviary):
         self._gate_manager.reset()
         self._episode_steps = 0
         self._step_cache    = {}
+        self._last_action         = _HOVER_ACTION.copy()
+        self._last_applied_action = _HOVER_ACTION.copy()
 
         obs, info = super().reset(seed=seed, options=options)
         # super().reset() calls _addObstacles() which loads gate URDFs.
@@ -183,8 +195,21 @@ class DroneRacingEnv(BaseAviary):
     def step(self, action):
         # Clear per-step cache at the start of each step.
         self._step_cache = {}
-        self._last_action = np.asarray(action, dtype=np.float32)
-        obs, reward, terminated, truncated, info = super().step(action)
+
+        # Raw policy output — used for jerk penalty and the obs [27:31] slot.
+        raw_action = np.asarray(action, dtype=np.float32)
+        self._last_action = raw_action
+
+        # Temporal action smoothing: EMA low-pass filter before the physics engine.
+        # applied = α * raw_t + (1−α) * applied_{t-1}
+        applied_action = (
+            ACTION_SMOOTHING_ALPHA * raw_action
+            + (1.0 - ACTION_SMOOTHING_ALPHA) * self._last_applied_action
+        )
+        self._last_applied_action = applied_action.copy()
+
+        # Pass the smoothed action to BaseAviary → _preprocessAction → RPMs.
+        obs, reward, terminated, truncated, info = super().step(applied_action)
         self._episode_steps += 1
 
         # Merge diagnostics
