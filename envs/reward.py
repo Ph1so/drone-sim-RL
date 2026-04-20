@@ -50,6 +50,7 @@ class RewardComputer:
 
     # ── Terminal reward ────────────────────────────────────────────────────
     # Paper: subtract r_crash=5.0; implemented as adding CRASH_PENALTY=−5.0.
+    CRASH_PENALTY: float = -5.0
 
     def __init__(self, gate_manager: GateManager) -> None:
         self._gm           = gate_manager
