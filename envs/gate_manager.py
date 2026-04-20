@@ -166,8 +166,9 @@ class GateManager:
         self._n_gates   = min(max(num_gates, 1), len(RACE_GATES))
         self._pos_offset = np.asarray(pos_offset, dtype=np.float64) if pos_offset is not None else None
         self._idx:  int  = 0
-        self.num_passed:   int  = 0
-        self.lap_complete: bool = False
+        self.num_passed:    int  = 0
+        self.laps_complete: int  = 0
+        self.lap_complete:  bool = False  # transient: True only on the step a lap finishes
         self.gates: List[Gate] = []
         self.reset()
 
@@ -206,9 +207,13 @@ class GateManager:
         Returns True on the step a gate crossing is detected.
         drone_vel is the world-frame linear velocity; it is used to reject
         back-entry (velocity must be aligned with the gate normal).
+
+        On lap completion the gate sequence is immediately reset so the drone
+        can continue flying additional laps.  ``lap_complete`` is a transient
+        flag — True only on the step the final gate is cleared; it reverts to
+        False on the very next call.  ``laps_complete`` is the cumulative count.
         """
-        if self.lap_complete:
-            return False
+        self.lap_complete = False  # clear transient signal from previous step
 
         gate = self.current_gate
         if gate.check_passing(drone_pos, drone_vel):
@@ -216,7 +221,13 @@ class GateManager:
             self.num_passed += 1
             self._idx   += 1
             if self._idx >= len(self.gates):
-                self.lap_complete = True
+                # Lap done — signal for this step, then reset for next lap
+                self.laps_complete += 1
+                self.lap_complete   = True
+                self._idx           = 0
+                for g in self.gates:
+                    g.passed            = False
+                    g._prev_signed_dist = None
             return True
         return False
 
@@ -227,9 +238,10 @@ class GateManager:
         if self._pos_offset is not None:
             for gate in self.gates:
                 gate.position = gate.position + self._pos_offset
-        self._idx         = 0
-        self.num_passed   = 0
-        self.lap_complete = False
+        self._idx          = 0
+        self.num_passed    = 0
+        self.laps_complete = 0
+        self.lap_complete  = False
 
     # ------------------------------------------------------------------
     def fast_forward_to(self, k: int) -> None:

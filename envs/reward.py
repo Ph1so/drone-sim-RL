@@ -43,7 +43,7 @@ class RewardComputer:
 
     # ── Swift reward coefficients (Extended Data Table 1a) ────────────────
     LAMBDA_1: float = 1.0     # progress: distance-delta weight
-    LAMBDA_2: float = 0.02*10    # perception: gate-in-FOV weight
+    LAMBDA_2: float = 0.02*2    # perception: gate-in-FOV weight
     LAMBDA_3: float = -10.0   # perception: δ_cam^4 shaping exponent
     LAMBDA_4: float = -2e-4   # body-rate: ‖a_t^ω‖² penalty weight
     LAMBDA_5: float = -1e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight # TODO: testing a bigger penalty 
@@ -155,8 +155,8 @@ class RewardComputer:
         drone_pos: np.ndarray,
         collision: bool,
     ) -> bool:
-        """Episode ends on crash (collision or OOB) or lap completion."""
-        return collision or self._is_oob(drone_pos) or self._gm.lap_complete
+        """Episode ends on crash (collision or OOB). Lap completion does not terminate."""
+        return collision or self._is_oob(drone_pos)
 
     @staticmethod
     def _is_oob(pos: np.ndarray) -> bool:

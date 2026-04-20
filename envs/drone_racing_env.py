@@ -216,6 +216,7 @@ class DroneRacingEnv(BaseAviary):
         info.update({
             "num_gates_passed": self._gate_manager.num_passed,
             "lap_complete":     self._gate_manager.lap_complete,
+            "laps_complete":    self._gate_manager.laps_complete,
             "current_gate_idx": self._gate_manager.current_gate_idx,
             "episode_steps":    self._episode_steps,
         })
