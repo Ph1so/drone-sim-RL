@@ -46,7 +46,7 @@ class RewardComputer:
     LAMBDA_2: float = 0.02    # perception: gate-in-FOV weight
     LAMBDA_3: float = -20.0   # perception: δ_cam^4 shaping exponent
     LAMBDA_4: float = -4e-4   # body-rate: ‖a_t^ω‖² penalty weight
-    LAMBDA_5: float = -1e-2   # jerk: ‖a_t − a_{t-1}‖² penalty weight # TODO: testing a bigger penalty 
+    LAMBDA_5: float = -1e-1   # jerk: ‖a_t − a_{t-1}‖² penalty weight # TODO: testing a bigger penalty 
 
     # ── Terminal reward ────────────────────────────────────────────────────
     # Paper: subtract r_crash=5.0; implemented as adding CRASH_PENALTY=−5.0.
