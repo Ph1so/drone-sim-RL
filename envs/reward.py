@@ -1,29 +1,22 @@
 """
-RewardComputer — Swift-style reward shaping for the drone racing task.
+RewardComputer — Swift reward (Kaufmann et al., Nature 2023).
 
-Based on: "Champion-level drone racing using deep reinforcement learning"
-          Kaufmann et al., 2023.
+Exact formulation from the paper:
 
-Reward components
------------------
-1.  Progress (r_prog)      : λ₁ [d_{t-1} − d_t]
-                             Rewards reduction in distance to the next gate centre.
-                             _prev_dist is reset to None on gate passage to avoid a
-                             large negative spike when the target switches to the next
-                             (farther) gate.
-2.  Perception (r_perc)    : λ₂ exp(−δ_cam / σ_perc)
-                             Rewards keeping the next gate centred in the body-frame
-                             forward direction (proxy for camera FOV in simulation).
-3.  Jerk penalty (r_jerk)  : λ₄ ‖a_t − a_{t-1}‖²
-                             Penalises large action changes between consecutive steps.
-4.  Body-rate penalty      : λ₅ ‖a_t^ω‖²
-   (r_body_rate)            Penalises large roll/pitch/yaw commands.
-5.  Gate passage bonus     : flat GATE_PASS_BONUS per gate cleared.
-   (r_gate_bonus)           Distinguishes "flew through the opening" from "crashed into
-                             the frame" — r_prog alone cannot make this distinction since
-                             it only sees scalar distance to the gate centre.
-                             Kept small (5.0) so it never dominates r_prog.
-7.  Crash/OOB penalty      : binary, terminates episode
+    r_t = r_prog + r_perc + r_cmd − r_crash
+
+    r_prog  = λ₁ [d_{t-1}^Gate − d_t^Gate]           λ₁ = 1.0
+    r_perc  = λ₂ exp(λ₃ · δ_cam⁴)                    λ₂ = 0.02, λ₃ = −10.0
+    r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²    λ₄ = −2e-4, λ₅ = −1e-4
+    r_crash = 5.0  if p_z < 0 OR collision; else 0   (terminates episode)
+
+Notes
+-----
+- No gate passage bonus (not in the paper).
+- r_crash is a positive constant that is subtracted from total reward,
+  implemented here as CRASH_PENALTY = −5.0 added to the total (equivalent).
+- _prev_dist is reset to None on gate passage to suppress the distance-spike
+  that occurs when the target switches to the next (farther) gate.
 """
 
 from __future__ import annotations
@@ -51,18 +44,16 @@ class RewardComputer:
     # ── Termination threshold (kept for practical stability) ──────────────
     FLIP_THRESHOLD: float = np.deg2rad(90)
 
-    # ── Swift reward coefficients ──────────────────────────────────────────
-    LAMBDA_1:      float = 1.0    # progress: distance-delta weight
-    LAMBDA_2:      float = 0.02   # perception: gate-in-FOV weight
-    SIGMA_PERC:    float = 0.5    # perception: angular bandwidth (rad, ≈28°)
-    LAMBDA_4:      float = -2e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
-    LAMBDA_5:      float = -1e-4   # body-rate: ‖a_t^ω‖² penalty weight
-    # ── Gate passage bonus ────────────────────────────────────────────────
-    GATE_PASS_BONUS:    float = 5.0     # flat per-gate (not escalating) — just enough
-                                        # to distinguish passage from near-miss/collision
+    # ── Swift reward coefficients (Extended Data Table 1a) ────────────────
+    LAMBDA_1: float = 1.0     # progress: distance-delta weight
+    LAMBDA_2: float = 0.02    # perception: gate-in-FOV weight
+    LAMBDA_3: float = -10.0   # perception: δ_cam^4 shaping exponent
+    LAMBDA_4: float = -2e-4   # body-rate: ‖a_t^ω‖² penalty weight
+    LAMBDA_5: float = -1e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
 
-    # ── Terminal rewards ───────────────────────────────────────────────────
-    CRASH_PENALTY:      float = -50.0   # collision OR out-of-bounds
+    # ── Terminal reward ────────────────────────────────────────────────────
+    # Paper: subtract r_crash=5.0; implemented as adding CRASH_PENALTY=−5.0.
+    CRASH_PENALTY: float = -5.0   # p_z < 0 OR collision with gate
 
     def __init__(self, gate_manager: GateManager) -> None:
         self._gm           = gate_manager
@@ -109,7 +100,7 @@ class RewardComputer:
         info["r_prog"] = round(r_prog, 6)
 
         # ── 2. Perception reward ──────────────────────────────────────────
-        # r_perc = λ₂ · exp(−δ_cam / σ_perc)
+        # r_perc = λ₂ · exp(λ₃ · δ_cam⁴)   (Kaufmann et al. eq. 8)
         # δ_cam: angle between body-frame forward axis and gate centre direction.
         # Body-forward in world frame via ZYX rotation matrix first column:
         #   fwd = [ cos(p)cos(y),  cos(p)sin(y),  sin(p) ]
@@ -117,12 +108,12 @@ class RewardComputer:
         cy = np.cos(drone_rpy[2]);  sy = np.sin(drone_rpy[2])
         fwd = np.array([cp * cy, cp * sy, sp])
 
-        gate_dir = (self._gm.current_gate.position - drone_pos) / max(curr_dist, 1e-6)
-        cos_a    = float(np.clip(np.dot(fwd, gate_dir), -1.0, 1.0))
-        delta_cam = np.arccos(cos_a)
-        r_perc   = self.LAMBDA_2 * np.exp(-delta_cam / self.SIGMA_PERC)
-        info["delta_cam"]  = round(float(delta_cam), 4)
-        info["r_perc"]     = round(float(r_perc), 6)
+        gate_dir  = (self._gm.current_gate.position - drone_pos) / max(curr_dist, 1e-6)
+        cos_a     = float(np.clip(np.dot(fwd, gate_dir), -1.0, 1.0))
+        delta_cam = float(np.arccos(cos_a))
+        r_perc    = self.LAMBDA_2 * np.exp(self.LAMBDA_3 * delta_cam ** 4)
+        info["delta_cam"] = round(delta_cam, 4)
+        info["r_perc"]    = round(float(r_perc), 6)
 
         # ── 3. Jerk penalty ───────────────────────────────────────────────
         # r_jerk = λ₄ · ‖a_t − a_{t-1}‖²
@@ -139,36 +130,26 @@ class RewardComputer:
         r_body_rate  = self.LAMBDA_5 * float(np.dot(omega_cmd, omega_cmd))
         info["r_body_rate"] = round(r_body_rate, 6)
 
-        # ── 5. Gate passage bonus ─────────────────────────────────────────────
-        # Flat (non-escalating) bonus that fires only when the drone actually
-        # passes through the gate opening.  r_prog cannot distinguish "close to
-        # gate centre" from "through the gate" because it only sees scalar
-        # distance.  This small bonus provides that missing binary signal.
-        r_gate_bonus = 0.0
+        # ── 5. Gate passage tracking (info only — no bonus reward) ───────────
         if gate_passed:
-            r_gate_bonus         = self.GATE_PASS_BONUS
-            info["gate_passed"]  = True
-            info["r_gate_bonus"] = r_gate_bonus
+            info["gate_passed"] = True
             if self._gm.lap_complete:
                 info["lap_complete"] = True
 
-        # ── 7. Crash / OOB penalty ────────────────────────────────────────
-        r_collision = 0.0
-        r_oob       = 0.0
-        if collision:
-            r_collision      = self.CRASH_PENALTY
-            info["collision"] = True
-        if self._is_oob(drone_pos):
-            r_oob                = self.CRASH_PENALTY
-            info["out_of_bounds"] = True
+        # ── 6. Crash penalty ──────────────────────────────────────────────
+        # r_crash = 5.0 if p_z < 0 OR collision (paper eq. 9), subtracted
+        # from total.  Implemented as CRASH_PENALTY = −5.0 added to total.
+        r_crash = 0.0
+        if collision or self._is_oob(drone_pos):
+            r_crash          = self.CRASH_PENALTY
+            info["crash"]    = True
+            info["collision"] = collision
+            info["out_of_bounds"] = self._is_oob(drone_pos)
 
-        reward = r_prog + r_perc + r_jerk + r_body_rate + r_gate_bonus + r_collision + r_oob
+        reward = r_prog + r_perc + r_jerk + r_body_rate + r_crash
 
         info["num_gates_passed"] = self._gm.num_passed
-        info.update({
-            "r_collision": r_collision,
-            "r_oob":       r_oob,
-        })
+        info["r_crash"]          = r_crash
         return float(reward), info
 
     # ------------------------------------------------------------------
@@ -178,7 +159,7 @@ class RewardComputer:
         collision:  bool,
         drone_rpy:  np.ndarray | None = None,
     ) -> bool:
-        """Episode ends on collision, OOB, lap completion, or flip past 90°."""
+        """Episode ends on crash (collision or OOB), lap completion, or flip past 90°."""
         flip = (
             drone_rpy is not None
             and (

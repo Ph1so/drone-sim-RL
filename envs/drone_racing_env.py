@@ -8,30 +8,25 @@ Action space
 Box(4,)  — normalised [Throttle, Roll, Pitch, Yaw] each in [−1, +1].
 Mapped to per-motor RPMs via a classical quadrotor mixer.
 
-Observation space
+Observation space  (matches Swift paper, Kaufmann et al. 2023)
 -----------------
-Dict{
-  "telemetry" : Box(13,)  — [pos_rel_to_gate(3), quat(4), lin_vel(3), ang_vel(3)]
-  "gate_obs"  : Box(10,)  — noisy gate-relative observation (see _compute_gate_obs)
-                            [curr_rel_x, curr_rel_y, curr_rel_z, curr_dist, curr_yaw_err,
-                             next_rel_x, next_rel_y, next_rel_z, next_dist, next_yaw_err]
-                            expressed in the drone's yaw frame with distance-scaled noise.
-                            next_* is zeroed when current gate is the last on the course.
-}
+Box(31,)  — flat float32 vector:
+  [0:3]   position in world frame (m)
+  [3:6]   linear velocity in world frame (m/s)
+  [6:15]  attitude as rotation matrix (body→world), flattened row-major (9-D)
+           Avoids quaternion discontinuities (Zhou et al., 2019).
+  [15:27] next-gate corners in drone body frame (4 corners × 3-D = 12-D)
+           Corners are the four vertices of the gate inner opening (±0.6 m).
+  [27:31] previous action applied at t−1 (4-D)
 
 Reward / termination
 --------------------
 See reward.py for the detailed shaping.  Episode ends on:
-  • Collision with any object
-  • Leaving the world-bounds box
-  • Completing all active gates (success)
-  • Exceeding MAX_EPISODE_STEPS (truncation)
-
-Modular perception note
------------------------
-_render_ego_camera() is kept but not used in _computeObs().  At competition time,
-replace the GateManager-based gate positions with estimates from a CV pipeline that
-produces the same 10-float gate_obs format — the policy requires no changes.
+  • Collision with any object  (crash penalty)
+  • Leaving the world-bounds box  (crash penalty)
+  • Completing all active gates  (success)
+  • Exceeding MAX_EPISODE_STEPS  (truncation)
+  • Roll or pitch > 90° (flip termination)
 """
 
 from __future__ import annotations
@@ -95,13 +90,11 @@ class DroneRacingEnv(BaseAviary):
         img_size:               tuple[int, int] = (IMG_H, IMG_W),
         ctrl_freq:              int = 48,
         record:                 bool = False,
-        gate_noise_std:         float = 0.3,
         num_gates:              int = 5,
         spawn_mid_course_prob:  float = 0.0,
         gate_pos_offset:        Optional[list] = None,
     ) -> None:
         self._img_h, self._img_w = img_size
-        self._gate_noise_std        = gate_noise_std
         self._spawn_mid_course_prob = spawn_mid_course_prob
 
         # GateManager and RewardComputer are created before super().__init__
@@ -140,25 +133,14 @@ class DroneRacingEnv(BaseAviary):
             dtype = np.float32,
         )
 
-    def _observationSpace(self) -> spaces.Dict:
-        return spaces.Dict({
-            "telemetry": spaces.Box(
-                low   = -np.inf,
-                high  =  np.inf,
-                shape = (13,),
-                dtype = np.float32,
-            ),
-            # 10-D gate-relative obs: [current_gate(5), next_gate(5)] in drone yaw frame.
-            # next_gate slice is zeros when current gate is the last active gate.
-            # Swap source: replace GateManager lookups with CV pipeline estimates
-            # at competition time — policy interface stays identical.
-            "gate_obs": spaces.Box(
-                low   = -np.inf,
-                high  =  np.inf,
-                shape = (10,),
-                dtype = np.float32,
-            ),
-        })
+    def _observationSpace(self) -> spaces.Box:
+        """31-D flat observation matching Swift paper (Kaufmann et al. 2023)."""
+        return spaces.Box(
+            low  = -np.inf,
+            high =  np.inf,
+            shape = (31,),
+            dtype = np.float32,
+        )
 
     # ------------------------------------------------------------------
     def reset(
@@ -250,25 +232,46 @@ class DroneRacingEnv(BaseAviary):
         return rpms.reshape(1, 4)   # (num_drones=1, 4)
 
     # ------------------------------------------------------------------
-    def _computeObs(self) -> dict:
+    def _computeObs(self) -> np.ndarray:
+        """
+        Build 31-D flat observation matching Swift paper (Kaufmann et al. 2023).
+
+        Layout:
+          [0:3]   position world frame
+          [3:6]   linear velocity world frame
+          [6:15]  rotation matrix body→world, row-major (9-D)
+          [15:27] next-gate corners in drone body frame (4 × 3-D)
+          [27:31] previous action
+        """
         cache = self._get_step_state()
         state = cache["state"]
 
-        pos_world = state[0:3].astype(np.float32)
-        gate_pos  = self._gate_manager.current_gate.position.astype(np.float32)
-        pos_rel   = pos_world - gate_pos          # gate-relative position (3,)
+        pos_world = state[0:3].astype(np.float32)           # (3,)
+        lin_vel   = state[10:13].astype(np.float32)         # (3,)
 
-        quat    = state[3:7].astype(np.float32)
-        lin_vel = state[10:13].astype(np.float32)
-        ang_vel = state[13:16].astype(np.float32)
+        # Rotation matrix (body→world) from quaternion (x,y,z,w PyBullet format)
+        quat    = state[3:7]
+        rot_mat = np.array(
+            p.getMatrixFromQuaternion(quat, physicsClientId=self.CLIENT)
+        ).reshape(3, 3).astype(np.float32)
+        rot_flat = rot_mat.flatten()                         # (9,)
 
-        telemetry = np.concatenate([pos_rel, quat, lin_vel, ang_vel])   # (13,)
-        gate_obs  = self._compute_gate_obs(
-            pos = state[0:3].astype(np.float64),
-            rpy = cache["rpy"],
-        )
+        # Next-gate corners in drone body frame (4 corners × 3-D = 12-D)
+        gate_corners = self._compute_gate_corners_body_frame(
+            pos_world = state[0:3].astype(np.float64),
+            rot_mat   = rot_mat.astype(np.float64),
+        )                                                    # (12,)
 
-        return {"telemetry": telemetry, "gate_obs": gate_obs}
+        # Previous action (set to zeros at episode start, current action thereafter)
+        prev_action = self._last_action                      # (4,)
+
+        return np.concatenate([
+            pos_world,    # 3
+            lin_vel,      # 3
+            rot_flat,     # 9
+            gate_corners, # 12
+            prev_action,  # 4
+        ]).astype(np.float32)   # total: 31
 
     # ------------------------------------------------------------------
     def _computeReward(self) -> float:
@@ -443,84 +446,46 @@ class DroneRacingEnv(BaseAviary):
                 return True
         return False
 
-    # ── Noise scaling constants ────────────────────────────────────────
-    _NOISE_DIST_REF:  float = 3.0   # m — distance at which noise == gate_noise_std
-    _MIN_NOISE_RATIO: float = 0.2   # floor: noise never drops below 20% of nominal
-
     # ------------------------------------------------------------------
-    def _single_gate_obs(
+    def _compute_gate_corners_body_frame(
         self,
-        gate,
-        pos: np.ndarray,
-        rpy: np.ndarray,
+        pos_world: np.ndarray,
+        rot_mat:   np.ndarray,
     ) -> np.ndarray:
         """
-        Compute a noisy 5-D relative observation for one gate in the drone's yaw frame.
+        Return the 4 corners of the current gate's inner opening expressed in
+        the drone body frame.  Output shape: (12,) — 4 corners × 3-D each.
 
-        Format: [rel_x, rel_y, rel_z, dist, gate_yaw_err]
+        This matches the Swift paper's gate observation:
+          "relative position of the four gate corners with respect to the vehicle"
+          — Kaufmann et al. 2023 (Methods, Observations section).
 
-        rel_x / rel_y : offset to gate centre along drone forward / left axes
-        rel_z         : vertical offset (positive = gate above drone)
-        dist          : euclidean distance derived from the noisy offset
-        gate_yaw_err  : signed angle (rad) from drone heading to gate normal
+        Gate opening corners (world frame):
+          top-right    : pos + right * HALF_OPEN_W + up * HALF_OPEN_H
+          top-left     : pos - right * HALF_OPEN_W + up * HALF_OPEN_H
+          bottom-left  : pos - right * HALF_OPEN_W - up * HALF_OPEN_H
+          bottom-right : pos + right * HALF_OPEN_W - up * HALF_OPEN_H
 
-        Noise is scaled with true distance: farther gates are noisier, mimicking
-        how a real CV detector has more uncertainty at longer range.
+        Transform to body frame: v_body = R^T @ (v_world - drone_pos)
+        where R is the body→world rotation matrix.
         """
-        rel_world  = gate.position - pos                        # (3,) world frame
-        true_dist  = float(np.linalg.norm(rel_world))
+        from .gate_manager import HALF_OPEN_W, HALF_OPEN_H
 
-        # ── Distance-scaled position noise ───────────────────────────
-        noise_scale  = max(true_dist / self._NOISE_DIST_REF, self._MIN_NOISE_RATIO)
-        effective_std = self._gate_noise_std * noise_scale
-        noise_xyz    = self.np_random.normal(0.0, effective_std, size=3).astype(np.float64)
-        rel_noisy    = rel_world + noise_xyz
+        gate     = self._gate_manager.current_gate
+        gpos     = gate.position            # (3,) world frame
+        right    = gate.right               # (3,) horizontal axis in gate plane
+        up       = np.array([0.0, 0.0, 1.0])
 
-        dist = float(np.linalg.norm(rel_noisy))
+        corners_world = np.array([
+            gpos + right * HALF_OPEN_W + up * HALF_OPEN_H,   # top-right
+            gpos - right * HALF_OPEN_W + up * HALF_OPEN_H,   # top-left
+            gpos - right * HALF_OPEN_W - up * HALF_OPEN_H,   # bottom-left
+            gpos + right * HALF_OPEN_W - up * HALF_OPEN_H,   # bottom-right
+        ], dtype=np.float64)   # (4, 3)
 
-        # ── Project into drone yaw frame ──────────────────────────────
-        yaw = float(rpy[2])
-        c, s  = np.cos(yaw), np.sin(yaw)
-        rel_x = float( c * rel_noisy[0] + s * rel_noisy[1])
-        rel_y = float(-s * rel_noisy[0] + c * rel_noisy[1])
-        rel_z = float(rel_noisy[2])
-
-        # ── Gate heading error (fixed small angular noise) ────────────
-        drone_fwd    = np.array([c, s])
-        gate_n_2d    = gate.normal[:2]
-        cross        = float(drone_fwd[0] * gate_n_2d[1] - drone_fwd[1] * gate_n_2d[0])
-        dot          = float(np.dot(drone_fwd, gate_n_2d))
-        gate_yaw_err = float(np.arctan2(cross, dot))
-        gate_yaw_err += float(self.np_random.normal(0.0, 0.05))
-
-        return np.array([rel_x, rel_y, rel_z, dist, gate_yaw_err], dtype=np.float32)
-
-    # ------------------------------------------------------------------
-    def _compute_gate_obs(
-        self,
-        pos: np.ndarray,
-        rpy: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Return a noisy 10-D gate observation: [current_gate(5), next_gate(5)].
-
-        The next-gate slice is all zeros when the current gate is the last active
-        gate on the curriculum course (sentinel that no further gate exists).
-
-        Swap note
-        ---------
-        At competition time replace GateManager lookups with CV pipeline estimates
-        in the same format.  The policy requires no changes.
-        """
-        curr_obs = self._single_gate_obs(self._gate_manager.current_gate, pos, rpy)
-
-        next_gate = self._gate_manager.next_gate
-        if next_gate is not None:
-            next_obs = self._single_gate_obs(next_gate, pos, rpy)
-        else:
-            next_obs = np.zeros(5, dtype=np.float32)
-
-        return np.concatenate([curr_obs, next_obs])  # (10,)
+        # Shift to drone origin then rotate into body frame
+        corners_body = (rot_mat.T @ (corners_world - pos_world).T).T  # (4, 3)
+        return corners_body.flatten().astype(np.float32)   # (12,)
 
     # ------------------------------------------------------------------
     def _render_ego_camera(

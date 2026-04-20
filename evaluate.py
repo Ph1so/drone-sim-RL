@@ -27,13 +27,12 @@ import time
 
 import numpy as np
 import pybullet as p
-import torch.nn as nn
 from PIL import Image
 from stable_baselines3 import PPO
 
 from envs import DroneRacingEnv
 from envs.reward import WORLD_BOUNDS
-from train import GateObsExtractor, FEATURES_DIM
+from train import _LeakyReLU02
 
 # ── Hyper-parameters ──────────────────────────────────────────────────────────
 
@@ -46,9 +45,7 @@ _BREAKDOWN_KEYS = [
     ("r_perc",       "perception"),
     ("r_jerk",       "jerk"),
     ("r_body_rate",  "body rate"),
-    ("r_gate_bonus", "gate bonus"),
-    ("r_collision",  "collision"),
-    ("r_oob",        "oob"),
+    ("r_crash",      "crash"),
 ]
 
 
@@ -398,10 +395,8 @@ def evaluate(args: argparse.Namespace) -> None:
     # checkpoints saved on Colab Python 3.12 and loaded on Python 3.10).
     custom_objects = {
         "policy_kwargs": dict(
-            features_extractor_class  = GateObsExtractor,
-            features_extractor_kwargs = {"features_dim": FEATURES_DIM},
-            net_arch      = dict(pi=[256, 128], vf=[256, 128]),
-            activation_fn = nn.ReLU,
+            net_arch      = [128, 128],
+            activation_fn = _LeakyReLU02,
         )
     }
 

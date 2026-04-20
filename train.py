@@ -1,18 +1,17 @@
 """
 train.py — PPO training script for DroneRacingEnv.
 
-Architecture
+Architecture  (matches Swift paper, Kaufmann et al. 2023)
 ------------
-  MultiInputPolicy + custom GateObsExtractor:
-    - Telemetry branch : 2-layer MLP (13-D)  →  64-D feature vector
-    - Gate-obs branch  : 2-layer MLP (10-D)  →  64-D feature vector
-    - Fusion           : concat → Linear(256) → ReLU  →  policy/value heads
+  MlpPolicy — flat 31-D observation → 2-layer MLP (128 × 128, LeakyReLU α=0.2)
+  No custom feature extractor.  Policy and value heads each get a 128-unit hidden
+  layer on top of the shared backbone.
 
 Usage
 -----
   python train.py                        # default settings
-  python train.py --timesteps 5_000_000
-  python train.py --headless 0           # run with GUI (slow, for debug)
+  python train.py --timesteps 100_000_000
+  python train.py --n_envs 100           # match paper's 100 parallel agents
 
 Checkpoints are saved to ./checkpoints/ every SAVE_FREQ steps.
 TensorBoard logs go to ./logs/.
@@ -21,17 +20,15 @@ TensorBoard logs go to ./logs/.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 
-import torch
 import torch.nn as nn
-from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     CheckpointCallback,
     EvalCallback,
 )
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from envs import DroneRacingEnv
@@ -40,89 +37,24 @@ from envs.reward import RewardComputer
 
 
 # ── Hyper-parameters ──────────────────────────────────────────────────────────
-TOTAL_TIMESTEPS  = 3_000_000
-N_ENVS           = os.cpu_count() or 4   # parallel workers — defaults to CPU count
-N_STEPS          = 512        # rollout steps per worker per update
-BATCH_SIZE       = 256
-N_EPOCHS         = 10
-GAMMA            = 0.99
-GAE_LAMBDA       = 0.95
-CLIP_RANGE       = 0.2
-ENT_COEF         = 0.01       # exploration entropy bonus
-LR               = 3e-4
-FEATURES_DIM     = 256
-SAVE_FREQ        = 50_000     # checkpoint interval (env steps, not timesteps)
+TOTAL_TIMESTEPS = 3_000_000
+N_ENVS          = os.cpu_count() or 4   # paper uses 100; scale to local hardware
+N_STEPS         = 1500       # matches MAX_EPISODE_STEPS — one rollout = one episode
+BATCH_SIZE      = 256
+N_EPOCHS        = 10
+GAMMA           = 0.99       # matches paper Extended Data Table 1a
+GAE_LAMBDA      = 0.95
+CLIP_RANGE      = 0.2        # ε in paper = 0.2
+LR              = 3e-4       # matches paper Adam lr
+SAVE_FREQ       = 50_000     # checkpoint interval (env steps)
 
-CHECKPOINT_DIR   = "./checkpoints"   # overridable via --checkpoint_dir
-LOG_DIR          = "./logs"           # overridable via --log_dir
-BEST_MODEL_DIR   = "./best_model"     # overridable via --best_model_dir
+CHECKPOINT_DIR  = "./checkpoints"
+LOG_DIR         = "./logs"
+BEST_MODEL_DIR  = "./best_model"
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Custom feature extractor
-# ══════════════════════════════════════════════════════════════════════════════
-
-class GateObsExtractor(BaseFeaturesExtractor):
-    """
-    Feature extractor for a Dict observation with keys:
-      "telemetry"  : shape (13,)  — float32  [pos, quat, lin_vel, ang_vel]
-      "gate_obs"   : shape (10,)  — float32  [curr_rel_x, curr_rel_y, curr_rel_z, curr_dist, curr_yaw_err,
-                                              next_rel_x, next_rel_y, next_rel_z, next_dist, next_yaw_err]
-
-    Two small MLPs are fused into *features_dim* for the policy/value heads.
-    No CNN — the policy never sees raw pixels.
-
-    Swap note
-    ---------
-    At competition time, wire the gate_obs input to estimates from a CV pipeline
-    that produces the same 5-float format.  This extractor and the policy weights
-    require no changes.
-    """
-
-    def __init__(
-        self,
-        observation_space: spaces.Dict,
-        features_dim: int = FEATURES_DIM,
-    ) -> None:
-        super().__init__(observation_space, features_dim)
-
-        tel_dim      = observation_space["telemetry"].shape[0]   # 13
-        gate_obs_dim = observation_space["gate_obs"].shape[0]    # 10 (curr 5 + next 5)
-
-        # ── Telemetry branch ──────────────────────────────────────────
-        self.tel_net = nn.Sequential(
-            nn.Linear(tel_dim, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 64),
-            nn.ReLU(inplace=True),
-        )
-
-        # ── Gate-obs branch ───────────────────────────────────────────
-        self.gate_net = nn.Sequential(
-            nn.Linear(gate_obs_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, 64),
-            nn.ReLU(inplace=True),
-        )
-
-        # ── Fusion layer ──────────────────────────────────────────────
-        self.fusion = nn.Sequential(
-            nn.Linear(64 + 64, features_dim),
-            nn.ReLU(inplace=True),
-        )
-
-        print(
-            f"[GateObsExtractor] "
-            f"tel out=64, gate_obs out=64, "
-            f"fusion → {features_dim}"
-        )
-
-    def forward(self, obs: dict) -> torch.Tensor:
-        tel_feat  = self.tel_net(obs["telemetry"].float())
-        gate_feat = self.gate_net(obs["gate_obs"].float())
-        return self.fusion(torch.cat([tel_feat, gate_feat], dim=1))
+# LeakyReLU(α=0.2) as used in Swift (Kaufmann et al. 2023, Methods).
+# functools.partial is picklable — safe with SubprocVecEnv.
+_LeakyReLU02 = functools.partial(nn.LeakyReLU, negative_slope=0.2)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -173,29 +105,22 @@ def main(args: argparse.Namespace) -> None:
     # ── Evaluation environment — no mid-course spawns for clean metrics ──
     eval_env = DroneRacingEnv(gui=False, num_gates=num_gates, spawn_mid_course_prob=0.0)
 
-    # ── Policy kwargs with custom extractor ──────────────────────────
+    # ── Policy kwargs — Swift: flat 2×128 MLP with LeakyReLU(α=0.2) ────
+    # net_arch=[128, 128] → shared backbone only; pi=[] vf=[] means no
+    # separate heads beyond the shared layers (matches Swift's 2-layer MLP).
     policy_kwargs = dict(
-        features_extractor_class  = GateObsExtractor,
-        features_extractor_kwargs = {"features_dim": FEATURES_DIM},
-        # Separate policy and value networks after the shared extractor
-        net_arch = dict(pi=[256, 128], vf=[256, 128]),
-        activation_fn = nn.ReLU,
+        net_arch      = [128, 128],
+        activation_fn = _LeakyReLU02,
     )
 
     # ── PPO model ─────────────────────────────────────────────────────
     if args.resume:
         print(f"[train] Resuming from checkpoint: {args.resume}")
-        # Override hyperparams for pursuit phase:
-        #   - lower LR (5e-5) to avoid shattering stable flight physics
-        #   - ent_coef (0.01) reinjects exploration under the new reward signal
         custom_objects = {
             "learning_rate": 5e-5,
-            "ent_coef": 0.01,
             "policy_kwargs": dict(
-                features_extractor_class  = GateObsExtractor,
-                features_extractor_kwargs = {"features_dim": FEATURES_DIM},
-                net_arch      = dict(pi=[256, 128], vf=[256, 128]),
-                activation_fn = nn.ReLU,
+                net_arch      = [128, 128],
+                activation_fn = _LeakyReLU02,
             ),
         }
         model = PPO.load(
@@ -208,7 +133,7 @@ def main(args: argparse.Namespace) -> None:
         )
     else:
         model = PPO(
-            policy          = "MultiInputPolicy",
+            policy          = "MlpPolicy",
             env             = train_env,
             n_steps         = N_STEPS,
             batch_size      = BATCH_SIZE,
@@ -216,7 +141,7 @@ def main(args: argparse.Namespace) -> None:
             gamma           = GAMMA,
             gae_lambda      = GAE_LAMBDA,
             clip_range      = CLIP_RANGE,
-            ent_coef        = ENT_COEF,
+            ent_coef        = 0.0,
             learning_rate   = LR,
             policy_kwargs   = policy_kwargs,
             tensorboard_log = log_dir,
@@ -250,23 +175,22 @@ def main(args: argparse.Namespace) -> None:
     rc = RewardComputer
     lr = 5e-5 if args.resume else LR
     print(f"\n{'='*60}")
-    print(f"  DroneRacing PPO training  (Swift reward)")
+    print(f"  DroneRacing PPO  —  Swift architecture (Kaufmann et al. 2023)")
+    print(f"  Policy          : MlpPolicy  2×128  LeakyReLU(α=0.2)")
+    print(f"  Obs dim         : 31  (pos·vel·rotmat·gate_corners·prev_action)")
     print(f"  Total timesteps : {args.timesteps:,}")
-    print(f"  Parallel envs   : {n_envs}")
+    print(f"  Parallel envs   : {n_envs}  (paper: 100)")
+    print(f"  N_steps/worker  : {N_STEPS}  (= episode length)")
     print(f"  Active gates    : {num_gates} / {len(RACE_GATES)}")
     print(f"  Mid-course prob : {spawn_mid_course_prob:.0%}")
     print(f"  Learning rate   : {lr}")
     print(f"  Device          : {args.device}")
     print(f"  {'─'*54}")
-    print(f"  Reward policy (Swift, Kaufmann et al. 2023)")
-    print(f"    Rewards")
-    print(f"      progress         {rc.LAMBDA_1} × (d_prev − d_curr)")
-    print(f"      perception       {rc.LAMBDA_2} × exp(−δ_cam / {rc.SIGMA_PERC})")
-    print(f"      gate passage     {rc.GATE_PASS_BONUS} (flat, per gate)")
-    print(f"    Penalties")
-    print(f"      jerk             {rc.LAMBDA_4} × ‖Δa‖²")
-    print(f"      body rate        {rc.LAMBDA_5} × ‖a^ω‖²")
-    print(f"      crash / OOB      {rc.CRASH_PENALTY} (binary)")
+    print(f"  Reward  (exact Swift formulation)")
+    print(f"    r_prog  = {rc.LAMBDA_1} × (d_prev − d_curr)")
+    print(f"    r_perc  = {rc.LAMBDA_2} × exp({rc.LAMBDA_3} × δ_cam⁴)")
+    print(f"    r_cmd   = {rc.LAMBDA_4} × ‖a^ω‖²  +  {rc.LAMBDA_5} × ‖Δa‖²")
+    print(f"    r_crash = {rc.CRASH_PENALTY}  (collision or OOB, binary)")
     print(f"{'='*60}\n")
 
     model.learn(
