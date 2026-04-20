@@ -26,7 +26,6 @@ See reward.py for the detailed shaping.  Episode ends on:
   • Leaving the world-bounds box  (crash penalty)
   • Completing all active gates  (success)
   • Exceeding MAX_EPISODE_STEPS  (truncation)
-  • Roll or pitch > 90° (flip termination)
 """
 
 from __future__ import annotations
@@ -312,7 +311,7 @@ class DroneRacingEnv(BaseAviary):
         info["gate_passed"]      = cache.get("gate_passed", False)
         info["collision"]        = cache["collision"]
         info["drone_pos"]        = cache["pos"].copy()   # world-frame (3,) — for trajectory plots
-        info["drone_rpy"]        = cache["rpy"].copy()   # roll, pitch, yaw in radians — for flip diagnosis
+        info["drone_rpy"]        = cache["rpy"].copy()   # roll, pitch, yaw in radians
         info["drone_lin_vel"]    = cache["state"][10:13].copy()   # world-frame linear velocity (m/s)
         info["drone_ang_vel"]    = cache["state"][13:16].copy()   # world-frame angular velocity (rad/s)
         return info

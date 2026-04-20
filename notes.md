@@ -198,7 +198,6 @@ Removed terms:
 - `r_vel_gate_align` — velocity vs gate normal alignment
 - `r_time` — per-step time penalty
 - `r_tilt` — excess roll+pitch penalty
-- `r_flip` — one-shot flip terminal penalty
 - `r_ang_vel` — quadratic angular velocity penalty
 - `r_alt_align` — altitude offset from gate
 - `r_vdown` — downward velocity penalty below gate altitude
@@ -220,7 +219,6 @@ Added Swift terms:
 - Crash / OOB penalty reduced from −500 / −50 → −5.0 (Swift binary)
 - Gate escalating bonus (150 × n) and lap bonus (500) retained — not in Swift but provide
   necessary sparse signal for the 5-gate racing task
-- Flip termination kept (practical stability; not in Swift paper which uses a flight controller)
 - `RewardComputer.reset()` now clears `_prev_dist` and `_prev_action`
 
 **`envs/drone_racing_env.py` — action forwarding**

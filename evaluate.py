@@ -190,14 +190,12 @@ def _save_traj_plot(
     Panel 1 — Bird's-eye XY trajectory
         Flight path coloured by which gate is being targeted.
         Gate openings (thick bars) and exit-normal arrows drawn.
-        Flip location marked with a red ×.
 
     Panel 2 — Speed (‖v‖) over time
         Total speed in m/s with gate passage markers.
 
     Panel 3 — Roll & Pitch over time
-        Both in degrees, with ±FLIP_THRESHOLD dashed lines and
-        vertical markers where each gate was passed.
+        Both in degrees with vertical markers where each gate was passed.
 
     Panel 4 — Angular velocity magnitude ‖ω‖ over time
         Shows whether instability builds gradually or spikes suddenly.
@@ -213,7 +211,6 @@ def _save_traj_plot(
         return
 
     from envs.gate_manager import HALF_OPEN_W
-    from envs.reward import RewardComputer
 
     pos      = np.array(traj["pos"],        dtype=float)   # (N, 3)
     rpy      = np.array(traj["rpy"],        dtype=float)   # (N, 3) radians
@@ -223,12 +220,8 @@ def _save_traj_plot(
     steps    = np.arange(len(pos))
     speed    = np.linalg.norm(lin_vel, axis=1)             # (N,) m/s
 
-    flip_thresh_deg = np.rad2deg(RewardComputer.FLIP_THRESHOLD)
-
     # Steps where the target gate advanced (gate passage events)
     gate_pass_steps = list(np.where(np.diff(g_idx) > 0)[0])
-    # First step where the flip penalty fired (None if clean episode)
-    flip_step = next((i for i, f in enumerate(traj["flip_fired"]) if f), None)
 
     seg_colors = ["tab:cyan", "tab:green", "tab:orange", "tab:red", "tab:purple", "tab:brown"]
 
@@ -255,9 +248,6 @@ def _save_traj_plot(
         arrowprops=dict(arrowstyle="->", color="green", lw=2.0),
         zorder=6,
     )
-    if flip_step is not None:
-        ax.plot(pos[flip_step, 0], pos[flip_step, 1],
-                "rx", ms=14, mew=2.5, zorder=6, label=f"flip (step {flip_step})")
     for gate in gates:
         gx, gy = gate.position[0], gate.position[1]
         right = np.array([np.cos(gate.yaw_rad), np.sin(gate.yaw_rad)])
@@ -284,8 +274,6 @@ def _save_traj_plot(
     ax.fill_between(steps, speed, alpha=0.15, color="tab:blue")
     for s in gate_pass_steps:
         ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
-    if flip_step is not None:
-        ax.axvline(flip_step, color="red", lw=1.5, alpha=0.6, label="flip")
     ax.set_xlabel("step")
     ax.set_ylabel("m/s")
     ax.set_title("Speed ‖v‖  (green verticals = gate passages)")
@@ -298,17 +286,12 @@ def _save_traj_plot(
     pitch_deg = np.rad2deg(rpy[:, 1])
     ax.plot(steps, roll_deg,  color="tab:blue",   lw=1.5, label="roll")
     ax.plot(steps, pitch_deg, color="tab:orange",  lw=1.5, label="pitch")
-    ax.axhline( flip_thresh_deg, color="red", ls="--", lw=1.2,
-                label=f"flip threshold ±{flip_thresh_deg:.0f}°")
-    ax.axhline(-flip_thresh_deg, color="red", ls="--", lw=1.2)
     ax.axhline(0, color="gray", ls=":", lw=0.7)
     for s in gate_pass_steps:
         ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
-    if flip_step is not None:
-        ax.axvline(flip_step, color="red", lw=1.5, alpha=0.6)
     ax.set_xlabel("step")
     ax.set_ylabel("degrees")
-    ax.set_title("Roll & Pitch  (green verticals = gate passages, red vertical = flip)")
+    ax.set_title("Roll & Pitch  (green verticals = gate passages)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
@@ -319,8 +302,6 @@ def _save_traj_plot(
     ax.fill_between(steps, omega, alpha=0.15, color="tab:red")
     for s in gate_pass_steps:
         ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
-    if flip_step is not None:
-        ax.axvline(flip_step, color="red", lw=1.5, alpha=0.6, label="flip")
     ax.set_xlabel("step")
     ax.set_ylabel("rad/s")
     ax.set_title("Angular velocity magnitude ‖ω‖  (green verticals = gate passages)")
@@ -481,7 +462,6 @@ def evaluate(args: argparse.Namespace) -> None:
             "lin_vel":    [],
             "ang_vel_sq": [],
             "gate_idx":   [],
-            "flip_fired": [],
         }
 
         while not done:
@@ -496,7 +476,6 @@ def evaluate(args: argparse.Namespace) -> None:
                 ang_vel = info.get("drone_ang_vel", np.zeros(3))
                 traj["ang_vel_sq"].append(float(np.dot(ang_vel, ang_vel)))
                 traj["gate_idx"].append(info.get("current_gate_idx", 0))
-                traj["flip_fired"].append(bool(info.get("flip", False)))
             if ep == 1:
                 gif_frames.append(env._render_ego_camera())
             pov_mode = _handle_camera(env.CLIENT, pov_mode)
