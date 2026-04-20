@@ -31,6 +31,7 @@ See reward.py for the detailed shaping.  Episode ends on:
 from __future__ import annotations
 
 import os
+from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -90,7 +91,7 @@ class DroneRacingEnv(BaseAviary):
         ctrl_freq:              int = 48,
         record:                 bool = False,
         num_gates:              int = 5,
-        spawn_mid_course_prob:  float = 0.0,
+        spawn_mid_course_prob:  float = 0.8,
         gate_pos_offset:        Optional[list] = None,
     ) -> None:
         self._img_h, self._img_w = img_size
@@ -100,6 +101,15 @@ class DroneRacingEnv(BaseAviary):
         # because BaseAviary.__init__ calls _addObstacles() internally.
         self._gate_manager   = GateManager(num_gates=num_gates, pos_offset=gate_pos_offset)
         self._reward_computer = RewardComputer(self._gate_manager)
+
+        # Per-gate ring buffer of gate-crossing states (Swift paper).
+        # Persists across episodes — accumulated during training so that later
+        # episodes spawn at realistic racing velocities/attitudes.
+        # Index matches RACE_GATES order (up to 5 gates).
+        from .gate_manager import RACE_GATES as _RG
+        self._gate_buffer: list[deque] = [
+            deque(maxlen=self._BUFFER_CAPACITY) for _ in range(len(_RG))
+        ]
 
         # Per-step cache (populated once, read by reward/term/info methods)
         self._step_cache: dict = {}
@@ -276,7 +286,16 @@ class DroneRacingEnv(BaseAviary):
     def _computeReward(self) -> float:
         cache       = self._get_step_state()
         gate_passed = self._gate_manager.update(cache["pos"])
-        cache["gate_passed"] = gate_passed   # share with terminated/info
+        cache["gate_passed"] = gate_passed
+
+        # Record gate-crossing state into the per-gate buffer (Swift paper).
+        # _idx has already been incremented by update(), so the gate just passed
+        # is at index _idx - 1.  The full drone state is captured at crossing time
+        # so future spawns get realistic velocity, attitude, and body rates.
+        if gate_passed:
+            passed_idx = self._gate_manager._idx - 1
+            if 0 <= passed_idx < len(self._gate_buffer):
+                self._record_gate_crossing(passed_idx, cache["state"])
 
         lin_vel = cache["state"][10:13]
         ang_vel = cache["state"][13:16]
@@ -320,85 +339,151 @@ class DroneRacingEnv(BaseAviary):
     # Internal helpers
     # ══════════════════════════════════════════════════════════════════════════
 
-    # Speed injected at mid-course spawns — approximates realistic post-gate velocity.
-    # Matches the evaluation distribution (drone exits a gate with forward momentum)
-    # so the policy learns to handle the turn, not just approach from a standstill.
+    def _record_gate_crossing(self, gate_idx: int, state: np.ndarray) -> None:
+        """
+        Store the drone's full kinematic state at the moment it passes gate_idx.
+
+        Captured fields (all in world frame):
+          pos     — position          state[0:3]
+          quat    — attitude quaternion state[3:7]  (x,y,z,w PyBullet convention)
+          lin_vel — linear velocity   state[10:13]
+          ang_vel — angular velocity  state[13:16]
+        """
+        self._gate_buffer[gate_idx].append({
+            "pos":     state[0:3].copy(),
+            "quat":    state[3:7].copy(),
+            "lin_vel": state[10:13].copy(),
+            "ang_vel": state[13:16].copy(),
+        })
+
+    # ── Geometric-spawn fallback parameters (used only before the buffer fills) ──
+    # Once the buffer has crossing states these are not used.
     _SPAWN_OFFSET:    float = 1.5   # m offset from prev gate centre
     _SPAWN_SPEED:     float = 2.0   # m/s for normal gate transitions
     _ARC_SPAWN_SPEED: float = 1.0   # m/s for tight corners (G3→G4)
 
+    # ── Swift-style crossing-buffer spawn parameters ───────────────────────────
+    # Bounded perturbation around a recorded gate-crossing state (Swift paper,
+    # Methods: "initialized at a random gate on the track, with bounded
+    # perturbation around a state previously observed when passing this gate").
+    _BUFFER_CAPACITY:   int   = 64    # crossing states stored per gate (ring buffer)
+    _SPAWN_NOISE_POS:   float = 0.20  # m   ±position noise in x/y; z uses 1/3 of this
+    _SPAWN_NOISE_VEL:   float = 0.50  # m/s ±linear velocity noise per axis
+    _SPAWN_NOISE_ANG:   float = 0.20  # rad/s ±angular velocity noise per axis
+    _SPAWN_NOISE_YAW:   float = float(np.deg2rad(5))  # rad ±yaw noise
+
     def _teleport_to_gate_approach(self, k: int) -> None:
         """
-        Teleport the drone to just past gate k-1's exit, aligned with that gate's
-        exit direction, with realistic forward velocity.
+        Teleport the drone to just past gate k-1, ready to target gate k.
 
-        Previously the drone spawned at rest already facing gate k.  That mismatch
-        caused the policy to learn "approach gate k from a standstill" rather than
-        "turn from gate k-1's exit momentum into gate k's approach axis" — the exact
-        maneuver that fails in evaluation.
+        Two spawn paths are tried in order:
 
-        Normal corners (k ≠ 3):
-          - Position : _SPAWN_OFFSET m along gate k-1's exit normal
-          - Yaw      : aligned with gate k-1's exit direction
-          - Velocity : _SPAWN_SPEED m/s along the exit normal
-          - Angular  : zero
+        1. **Buffer spawn** (Swift paper, preferred once buffer is populated):
+           Sample a previously-recorded gate-crossing state for gate k-1, then
+           apply bounded perturbation to position, linear velocity, angular
+           velocity, and yaw.  This gives the policy realistic racing conditions:
+           correct speed (5–13 m/s), non-zero body rates, and non-trivial roll/
+           pitch — matching the distribution seen at inference time.
 
-        G3→G4 tight corner (k=3):
-          G3 exits heading east while G4 is mostly south (~80° turn).  Spawning
-          1.5 m east of G3 lands the drone almost at G4's x-coordinate with
-          eastward momentum — only ~0.5 m of valid travel before overshoot.
-          Instead, spawn _SPAWN_OFFSET m along the G3→G4 chord so the drone
-          starts on the arc with enough runway to complete the turn:
-          - Position : _SPAWN_OFFSET m from G3 in the G3→G4 direction
-          - Yaw      : facing along G3→G4 chord (south-southeast)
-          - Velocity : _ARC_SPAWN_SPEED m/s along G3→G4 chord
-          - Angular  : zero
+        2. **Geometric spawn** (fallback, used before the buffer fills):
+           Compute a fixed position 1.5 m past gate k-1's exit and inject a
+           small fixed forward velocity.  The G3→G4 tight corner uses a chord-
+           based direction instead of the gate normal to avoid immediate overshoot.
 
-        GateManager is fast-forwarded to k in all cases.
+        GateManager is fast-forwarded to k in both cases.
 
         Parameters
         ----------
         k : int
             Index of the gate to target after the teleport (1-based, k ≥ 1).
         """
-        prev_gate = self._gate_manager.gates[k - 1]
+        buf = self._gate_buffer[k - 1]
 
-        # ── Spawn position ────────────────────────────────────────────────────
-        # G3→G4 tight corner: spawn along the G3→G4 chord so the drone has
-        # enough runway before G4's x-coordinate.  All other transitions spawn
-        # just past gate k-1's exit plane.
-        if k == 3 and len(self._gate_manager.gates) > k:
-            chord = (self._gate_manager.gates[k].position - prev_gate.position).copy()
-            chord[2] = 0.0
-            chord /= np.linalg.norm(chord)
-            spawn_pos   = prev_gate.position.copy() + chord * self._SPAWN_OFFSET
-            spawn_speed = self._ARC_SPAWN_SPEED
+        if buf:
+            # ── Path 1: Swift-style buffer spawn ─────────────────────────────
+            buf_list = list(buf)
+            idx      = int(self.np_random.integers(len(buf_list)))
+            recorded = buf_list[idx]
+
+            # Position: ±SPAWN_NOISE_POS in x/y, ±(SPAWN_NOISE_POS/3) in z
+            # Clip z so the drone never spawns underground or above the arena.
+            pos_noise = self.np_random.uniform(
+                [-self._SPAWN_NOISE_POS, -self._SPAWN_NOISE_POS, -self._SPAWN_NOISE_POS / 3],
+                [ self._SPAWN_NOISE_POS,  self._SPAWN_NOISE_POS,  self._SPAWN_NOISE_POS / 3],
+            )
+            spawn_pos = (recorded["pos"] + pos_noise).copy()
+            spawn_pos[2] = float(np.clip(spawn_pos[2], 0.3, 5.5))
+
+            # Linear velocity: realistic racing speed inherited from crossing +
+            # small noise so the policy sees a spread of entry speeds.
+            vel_noise = self.np_random.uniform(
+                -self._SPAWN_NOISE_VEL, self._SPAWN_NOISE_VEL, 3
+            )
+            spawn_lin_vel = (recorded["lin_vel"] + vel_noise).tolist()
+
+            # Angular velocity: non-zero body rates from actual flight + noise.
+            ang_noise = self.np_random.uniform(
+                -self._SPAWN_NOISE_ANG, self._SPAWN_NOISE_ANG, 3
+            )
+            spawn_ang_vel = (recorded["ang_vel"] + ang_noise).tolist()
+
+            # Attitude: use the recorded quaternion (preserves roll/pitch from
+            # the actual crossing) with a small yaw perturbation.
+            rpy    = list(p.getEulerFromQuaternion(recorded["quat"].tolist()))
+            rpy[2] += float(self.np_random.uniform(
+                -self._SPAWN_NOISE_YAW, self._SPAWN_NOISE_YAW
+            ))
+            spawn_quat = p.getQuaternionFromEuler(rpy)
+
+            p.resetBasePositionAndOrientation(
+                self.DRONE_IDS[0],
+                spawn_pos.tolist(),
+                spawn_quat,
+                physicsClientId=self.CLIENT,
+            )
+            p.resetBaseVelocity(
+                self.DRONE_IDS[0],
+                linearVelocity  = spawn_lin_vel,
+                angularVelocity = spawn_ang_vel,
+                physicsClientId = self.CLIENT,
+            )
+
         else:
-            spawn_pos   = prev_gate.position + prev_gate.normal * self._SPAWN_OFFSET
-            spawn_speed = self._SPAWN_SPEED
+            # ── Path 2: Geometric fallback (no buffer data yet) ───────────────
+            # G3→G4 tight corner: spawn along the G3→G4 chord so the drone has
+            # enough runway before G4's x-coordinate.  All other transitions
+            # spawn just past gate k-1's exit plane.
+            prev_gate = self._gate_manager.gates[k - 1]
 
-        # ── Face toward the target gate ───────────────────────────────────────
-        to_target = self._gate_manager.gates[k].position - spawn_pos
-        to_target[2] = 0.0                           # horizontal only
-        to_target /= np.linalg.norm(to_target)
-        exit_yaw  = float(np.arctan2(to_target[1], to_target[0]))
-        spawn_vel = (to_target * spawn_speed).tolist()
+            if k == 3 and len(self._gate_manager.gates) > k:
+                chord = (self._gate_manager.gates[k].position - prev_gate.position).copy()
+                chord[2] = 0.0
+                chord /= np.linalg.norm(chord)
+                spawn_pos   = prev_gate.position.copy() + chord * self._SPAWN_OFFSET
+                spawn_speed = self._ARC_SPAWN_SPEED
+            else:
+                spawn_pos   = prev_gate.position + prev_gate.normal * self._SPAWN_OFFSET
+                spawn_speed = self._SPAWN_SPEED
 
-        quat = p.getQuaternionFromEuler(
-            [0.0, 0.0, exit_yaw], physicsClientId=self.CLIENT
-        )
-        p.resetBasePositionAndOrientation(
-            self.DRONE_IDS[0],
-            spawn_pos.tolist(),
-            quat,
-            physicsClientId=self.CLIENT,
-        )
-        p.resetBaseVelocity(
-            self.DRONE_IDS[0],
-            linearVelocity  = spawn_vel,
-            angularVelocity = [0.0, 0.0, 0.0],
-            physicsClientId = self.CLIENT,
-        )
+            to_target = self._gate_manager.gates[k].position - spawn_pos
+            to_target[2] = 0.0
+            to_target /= np.linalg.norm(to_target)
+            exit_yaw   = float(np.arctan2(to_target[1], to_target[0]))
+            spawn_quat = p.getQuaternionFromEuler([0.0, 0.0, exit_yaw])
+
+            p.resetBasePositionAndOrientation(
+                self.DRONE_IDS[0],
+                spawn_pos.tolist(),
+                spawn_quat,
+                physicsClientId=self.CLIENT,
+            )
+            p.resetBaseVelocity(
+                self.DRONE_IDS[0],
+                linearVelocity  = (to_target * spawn_speed).tolist(),
+                angularVelocity = [0.0, 0.0, 0.0],
+                physicsClientId = self.CLIENT,
+            )
+
         self._gate_manager.fast_forward_to(k)
         self._step_cache = {}   # invalidate stale state
 

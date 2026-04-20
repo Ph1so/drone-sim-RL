@@ -61,7 +61,7 @@ _LeakyReLU02 = functools.partial(nn.LeakyReLU, negative_slope=0.2)
 # Environment factory
 # ══════════════════════════════════════════════════════════════════════════════
 
-def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5, spawn_mid_course_prob: float = 0.0):
+def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5, spawn_mid_course_prob: float = 0.8):
     """Return a callable that creates a single DroneRacingEnv."""
     def _init():
         env = DroneRacingEnv(gui=False, num_gates=num_gates, spawn_mid_course_prob=spawn_mid_course_prob)
@@ -251,7 +251,7 @@ if __name__ == "__main__":
         help="Number of active gates for curriculum training (1–5, default: %(default)s)",
     )
     parser.add_argument(
-        "--spawn_mid_course_prob", type=float, default=0.0,
+        "--spawn_mid_course_prob", type=float, default=0.8,
         help="Probability of spawning mid-course each episode (0–1, default: %(default)s)",
     )
     main(parser.parse_args())
