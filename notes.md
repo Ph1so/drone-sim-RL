@@ -2,6 +2,76 @@
 
 ---
 
+## 2026-04-20 — Align fully with Swift architecture (Kaufmann et al., Nature 2023)
+
+### Motivation
+The codebase had drifted from the Swift paper across several patches: the observation was a
+Dict with 5-D scalar gate descriptors, the network was a custom two-branch extractor with
+LayerNorm and a fusion layer, the reward used a different perception formula and a gate bonus
+that doesn't exist in the paper, and the crash penalty was 10× too large. This session
+brought all four systems into exact alignment with Swift.
+
+### Changes
+
+**`envs/reward.py` — exact Swift reward**
+
+- Changed `r_perc` from `λ₂ exp(−δ_cam / σ)` to `λ₂ exp(λ₃ δ_cam⁴)` with `λ₃ = −10.0`
+  (this is the paper's equation 8 exactly; the old Gaussian approximation was incorrect)
+- Removed `SIGMA_PERC = 0.5`, `GATE_PASS_BONUS = 5.0`, `r_gate_bonus`
+- Changed `CRASH_PENALTY` from `−50.0` → `−5.0` (paper value)
+- Unified collision + OOB into a single `r_crash` term (paper treats both as p_z < 0 / collision)
+- Removed `r_ang_vel` (was not in Swift paper; physical angular velocity penalty was added
+  as a workaround and is no longer needed once the reward is correctly formulated)
+
+**`envs/drone_racing_env.py` — flat 31-D observation**
+
+- `_observationSpace()`: changed from `spaces.Dict` → `spaces.Box(shape=(31,), dtype=np.float32)`
+- `_computeObs()`: returns flat ndarray `[pos(3) | lin_vel(3) | rot_mat(9) | gate_corners(12) | prev_action(4)]`
+  - Attitude: quaternion (x,y,z,w) → flattened 3×3 rotation matrix via `p.getMatrixFromQuaternion()`
+    (avoids gimbal-lock discontinuities; see Zhou et al. 2019)
+  - Gate: replaced 5-D `[rel_x, rel_y, rel_z, dist, yaw_err]` scalars with 4 corner positions
+    in drone body frame (12-D), computed via `R^T @ (corner_world − pos_drone)` for each corner
+  - Previous action: `self._last_action` appended as final 4 floats
+- Removed `gate_noise_std` parameter and all Gaussian noise injection
+- Removed `_single_gate_obs()`, `_compute_gate_obs()` helper methods
+- Added `_compute_gate_corners_body_frame()` helper
+
+**`train.py` — Swift MlpPolicy**
+
+- Removed entire `GateObsExtractor` class and all related imports
+- Removed `FEATURES_DIM`, `ENT_COEF` constants
+- Changed `N_STEPS = 512` → `N_STEPS = 1500` (one rollout = one full episode; matches paper)
+- Added `_LeakyReLU02 = functools.partial(nn.LeakyReLU, negative_slope=0.2)` (picklable
+  for SubprocVecEnv; `negative_slope=0.2` matches paper's LeakyReLU activation)
+- Changed policy from `"MultiInputPolicy"` → `"MlpPolicy"` with `net_arch=[128, 128]`
+- Set `ent_coef=0.0` (not used in Swift; was 0.01)
+
+**`evaluate.py` — sync with new policy**
+
+- Replaced `from train import GateObsExtractor, FEATURES_DIM` with `from train import _LeakyReLU02`
+- Updated `custom_objects` to use flat `MlpPolicy` with `net_arch=[128, 128], activation_fn=_LeakyReLU02`
+- Updated `_BREAKDOWN_KEYS`: removed `r_gate_bonus`, `r_collision`, `r_oob`; added `r_crash`
+
+### Architecture summary after this change
+
+| Dimension | Before | After (Swift) |
+|-----------|--------|---------------|
+| Obs type | `Dict{telemetry:13, gate_obs:10}` | `Box(31,)` flat |
+| Attitude | Quaternion (4-D) | Rotation matrix (9-D) |
+| Gate rep | 5-D scalars per gate | 12-D body-frame corners |
+| Prev action | Not included | ✓ 4-D |
+| Policy net | GateObsExtractor + MultiInputPolicy | 2×128 MLP, LeakyReLU(0.2) |
+| r_perc | exp(−δ/0.5) | exp(−10 δ⁴) |
+| Gate bonus | +5.0/gate | None |
+| Crash penalty | −50.0 | −5.0 |
+| N_STEPS | 512 | 1500 |
+
+### Training impact
+Old weights are incompatible — observation shape and policy architecture both changed.
+Must train from scratch.
+
+---
+
 ## 2026-04-19 — Add flat gate passage bonus (GATE_PASS_BONUS = 5.0)
 
 ### Problem

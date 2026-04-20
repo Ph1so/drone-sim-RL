@@ -83,27 +83,19 @@ M3 (RR, CCW) = hover + 0.5·h·T  +  0.2·h·R  +  0.2·h·P  +  0.1·h·Y
 
 ### Observation Space
 
-```python
-Dict{
-  "telemetry": Box(13,)  # pos(3) + quat(4) + lin_vel(3) + ang_vel(3)
-  "gate_obs":  Box(5,)   # noisy gate-relative obs in drone yaw frame (see below)
-}
-```
+Flat `Box(31,)` — matches the exact input used by the Swift policy (Kaufmann et al., 2023).
 
-`gate_obs` is a 10-float vector: `[current_gate(5), next_gate(5)]`, all in the drone's yaw frame.
+| Slice | Content | Dim |
+|-------|---------|-----|
+| `[0:3]` | Drone position in world frame (m) | 3 |
+| `[3:6]` | Linear velocity in world frame (m/s) | 3 |
+| `[6:15]` | Attitude as **rotation matrix** (row-major, body→world) | 9 |
+| `[15:27]` | 4 gate-corner positions in **drone body frame** (m) | 12 |
+| `[27:31]` | Previous action `[T, R, P, Y]` applied at t−1 | 4 |
 
-| Index | Name | Description |
-|-------|------|-------------|
-| 0 | `curr_rel_x` | Current gate offset along drone forward axis (m) |
-| 1 | `curr_rel_y` | Current gate offset along drone left axis (m) |
-| 2 | `curr_rel_z` | Vertical offset to current gate center (m) |
-| 3 | `curr_dist` | Euclidean distance to current gate (m) |
-| 4 | `curr_yaw_err` | Signed angle from drone heading to gate normal (rad) |
-| 5–9 | `next_*` | Same 5 fields for the gate after the current one |
+Attitude is encoded as a flattened 3×3 rotation matrix (not quaternion) to avoid gimbal-lock discontinuities (Zhou et al., 2019 — cited as ref. [47] in the Swift paper).
 
-The `next_*` slice is all zeros when the current gate is the last active gate (no lookahead needed).
-
-Noise is **distance-scaled**: σ = `gate_noise_std × max(dist / 3.0, 0.2)`. Farther gates are noisier, closer gates are cleaner — matching real CV detector behavior. Configurable via `DroneRacingEnv(gate_noise_std=...)`.
+Gate corners are computed from the current target gate's centre and yaw using a ±0.6 m half-opening in the gate plane, then transformed into drone body frame: `R^T @ (corner_world − pos_drone)`. The four corners are ordered top-right, top-left, bottom-left, bottom-right.
 
 > **No raw pixels are passed to the policy.** `_render_ego_camera()` is retained in the env for visualization and future CV pipeline integration.
 
@@ -125,48 +117,70 @@ Five gates on an oval-ish lap. The drone spawns at `[0, 0, 0.3]` facing `+Y`.
 
 ### Reward Components
 
-Based on *Champion-level drone racing using deep reinforcement learning* (Kaufmann et al., 2023).
+Exact Swift formulation — Kaufmann et al., *Nature* 2023, Extended Data Table 1a.
+
+```
+r_t = r_prog + r_perc + r_cmd − r_crash
+
+r_prog  = λ₁ × [d_{t-1}^Gate − d_t^Gate]                   λ₁ = 1.0
+r_perc  = λ₂ × exp(λ₃ × δ_cam⁴)                            λ₂ = 0.02,  λ₃ = −10.0
+r_cmd   = λ₄ × ‖a_t^ω‖²  +  λ₅ × ‖a_t − a_{t-1}‖²        λ₄ = −2e-4, λ₅ = −1e-4
+r_crash = 5.0  if p_z < 0 OR collision with gate; else 0   (episode terminates)
+```
 
 | Component | Formula | Weight |
 |---|---|---|
-| Progress | `d_{t-1} − d_t` (distance delta to gate) | λ₁ = 1.0 |
-| Perception | `exp(−δ_cam / σ)`, δ_cam = angle from body-fwd to gate | λ₂ = 0.02, σ = 0.5 rad |
-| Gate passage bonus | flat `+5.0` per gate cleared | — |
-| Jerk penalty | `−‖a_t − a_{t-1}‖²` | λ₄ = 2×10⁻⁴ |
-| Body-rate penalty | `−‖a_t^ω‖²` (roll/pitch/yaw channels) | λ₅ = 1×10⁻⁴ |
-| Crash / Out-of-bounds | `−50` + episode ends | — |
+| Progress | `λ₁ [d_{t-1} − d_t]` — distance delta to next gate | λ₁ = 1.0 |
+| Perception | `λ₂ exp(λ₃ δ_cam⁴)` — δ_cam = angle body-fwd → gate centre | λ₂ = 0.02, λ₃ = −10.0 |
+| Body-rate penalty | `λ₄ ‖a_t^ω‖²` (roll/pitch/yaw action channels) | λ₄ = −2×10⁻⁴ |
+| Jerk penalty | `λ₅ ‖a_t − a_{t-1}‖²` | λ₅ = −1×10⁻⁴ |
+| Crash / Out-of-bounds | `−5.0` + episode ends (p_z < 0 or collision) | — |
 
-No escalating gate bonuses or lap-completion bonus. The flat gate bonus (5.0) distinguishes "flew through the opening" from "crashed into the frame" — `r_prog` only sees scalar distance and cannot make this distinction. Gate transitions reset `_prev_dist` to avoid a negative spike when the target switches to the next (farther) gate.
+**No gate passage bonus.** Gate transitions reset `_prev_dist` to suppress the distance spike when the target switches to the next (farther) gate.
 
 ### Training Architecture
 
-`GateObsExtractor` plugged into SB3's `MultiInputPolicy`:
+Flat `MlpPolicy` matching the Swift paper (Kaufmann et al., 2023, Methods):
 
-- **Telemetry branch** — `Linear(13→128)` → LayerNorm → ReLU → `Linear(128→64)` → ReLU → 64-D
-- **Gate-obs branch** — `Linear(5→64)` → LayerNorm → ReLU → `Linear(64→64)` → ReLU → 64-D
-- **Fusion** — concat(128-D) → `Linear(256)` → ReLU → policy / value heads
+```
+Input (31-D) → Linear(128) → LeakyReLU(α=0.2) → Linear(128) → LeakyReLU(α=0.2) → policy / value heads
+```
 
-No CNN. The policy is a pure MLP — fast to train, trivial to run at inference.
+- **No feature extractor**, no CNN, no LayerNorm — just a 2-layer 128-unit MLP shared backbone
+- **LeakyReLU(α=0.2)** — paper-exact activation; `functools.partial(nn.LeakyReLU, negative_slope=0.2)` used so it is picklable with `SubprocVecEnv`
+- **Policy and value networks** share the backbone (standard SB3 `MlpPolicy`)
 
-PPO hyperparameters: 4 parallel envs, `n_steps=512`, `batch_size=256`, `ent_coef=0.01`, `lr=3e-4`.
+PPO hyperparameters:
+
+| Parameter | Value | Note |
+|-----------|-------|------|
+| `n_steps` | 1500 | One rollout = one full episode per worker |
+| `batch_size` | 256 | |
+| `n_epochs` | 10 | |
+| `gamma` | 0.99 | Matches paper Extended Data Table 1a |
+| `gae_lambda` | 0.95 | |
+| `clip_range` | 0.2 | ε in paper |
+| `ent_coef` | 0.0 | Not used in Swift |
+| `lr` | 3×10⁻⁴ | Adam; auto-lowered to 5×10⁻⁵ on `--resume` |
+
 When resuming (`--resume`), `lr` is automatically lowered to `5e-5` to stabilise the value function under the new reward scale.
 
 ### Modular Perception Design
 
-The policy never receives raw pixels. The `gate_obs` vector is the only perception interface:
+The policy never receives raw pixels. Gate corners in body frame are the only perception interface:
 
 ```
-[Prototype]                          [Competition]
-GateManager (ground truth)           CV pipeline on real sim camera
-  + Gaussian noise injection    →      same 5-float gate_obs format
-        ↓                                       ↓
-        policy ─────────────────────────── same policy weights
+[Prototype]                              [Competition]
+GateManager (ground truth geometry)      CV pipeline on real sim camera
+  → corner positions in body frame  →      same 12-D gate_corners slice
+             ↓                                         ↓
+             policy ─────────────────────────── same policy weights
 ```
 
 To deploy on the competition sim:
-1. Build a CV module that detects the next gate from the onboard camera and outputs `[rel_x, rel_y, rel_z, dist, gate_yaw_err]` in the drone's yaw frame.
-2. Replace the `_compute_gate_obs()` call in `_computeObs()` with your CV module's output.
-3. The trained policy and `GateObsExtractor` require zero changes.
+1. Build a CV module that detects the next gate from the onboard camera and outputs the 4 corner positions in the drone body frame (12 floats).
+2. Replace the `_compute_gate_corners_body_frame()` call in `_computeObs()` with your CV module's output.
+3. The trained policy requires zero changes.
 
 ### Step Cache
 

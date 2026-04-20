@@ -41,9 +41,6 @@ class RewardComputer:
     Must call :meth:`reset` at the start of every episode.
     """
 
-    # ── Termination threshold (kept for practical stability) ──────────────
-    FLIP_THRESHOLD: float = np.deg2rad(90)
-
     # ── Swift reward coefficients (Extended Data Table 1a) ────────────────
     LAMBDA_1: float = 1.0     # progress: distance-delta weight
     LAMBDA_2: float = 0.02    # perception: gate-in-FOV weight
@@ -155,19 +152,11 @@ class RewardComputer:
     # ------------------------------------------------------------------
     def is_terminated(
         self,
-        drone_pos:  np.ndarray,
-        collision:  bool,
-        drone_rpy:  np.ndarray | None = None,
+        drone_pos: np.ndarray,
+        collision: bool,
     ) -> bool:
-        """Episode ends on crash (collision or OOB), lap completion, or flip past 90°."""
-        flip = (
-            drone_rpy is not None
-            and (
-                abs(drone_rpy[0]) > self.FLIP_THRESHOLD
-                or abs(drone_rpy[1]) > self.FLIP_THRESHOLD
-            )
-        )
-        return collision or self._is_oob(drone_pos) or self._gm.lap_complete or flip
+        """Episode ends on crash (collision or OOB) or lap completion."""
+        return collision or self._is_oob(drone_pos) or self._gm.lap_complete
 
     @staticmethod
     def _is_oob(pos: np.ndarray) -> bool:
