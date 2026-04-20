@@ -285,7 +285,7 @@ class DroneRacingEnv(BaseAviary):
     # ------------------------------------------------------------------
     def _computeReward(self) -> float:
         cache       = self._get_step_state()
-        gate_passed = self._gate_manager.update(cache["pos"])
+        gate_passed = self._gate_manager.update(cache["pos"], cache["state"][10:13])
         cache["gate_passed"] = gate_passed
 
         # Record gate-crossing state into the per-gate buffer (Swift paper).

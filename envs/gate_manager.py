@@ -109,17 +109,21 @@ class Gate:
             and abs(local_v) <= HALF_OPEN_H * PASS_MARGIN
         )
 
-    def check_passing(self, drone_pos: np.ndarray) -> bool:
+    def check_passing(self, drone_pos: np.ndarray, drone_vel: np.ndarray) -> bool:
         """
         Call once per env step.  Returns True on the step the drone
-        crosses from the approach side to the exit side through the opening.
+        crosses from the approach side to the exit side through the opening,
+        AND is travelling in the same general direction as the gate normal
+        (dot(vel, normal) > 0).  Back-entry is silently ignored: the drone
+        stays on the current gate assignment and continues accruing penalties.
         """
         sd = self.signed_distance(drone_pos)
         crossed = False
         if self._prev_signed_dist is not None:
             if self._prev_signed_dist <= 0.0 < sd:
                 if self.is_within_opening(drone_pos):
-                    crossed = True
+                    if np.dot(drone_vel, self.normal) > 0.0:
+                        crossed = True
         self._prev_signed_dist = sd
         return crossed
 
@@ -154,7 +158,7 @@ class GateManager:
         gm = GateManager(num_gates=2)   # curriculum: first 2 gates only
         gm.load_gates(client, urdf)     # load URDFs into PyBullet
         ...
-        passed = gm.update(pos)         # call every step
+        passed = gm.update(pos, vel)    # call every step; vel = world-frame linear velocity
         dist   = gm.dist_to_next(pos)
     """
 
@@ -194,18 +198,20 @@ class GateManager:
         return float(np.linalg.norm(drone_pos - self.current_gate.position))
 
     # ------------------------------------------------------------------
-    def update(self, drone_pos: np.ndarray) -> bool:
+    def update(self, drone_pos: np.ndarray, drone_vel: np.ndarray) -> bool:
         """
         Check whether the drone just passed through the current gate.
         Advances internal index when a gate is cleared.
 
         Returns True on the step a gate crossing is detected.
+        drone_vel is the world-frame linear velocity; it is used to reject
+        back-entry (velocity must be aligned with the gate normal).
         """
         if self.lap_complete:
             return False
 
         gate = self.current_gate
-        if gate.check_passing(drone_pos):
+        if gate.check_passing(drone_pos, drone_vel):
             gate.passed  = True
             self.num_passed += 1
             self._idx   += 1
