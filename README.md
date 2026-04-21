@@ -263,3 +263,104 @@ Always activate the conda environment first:
 ```bash
 source ~/miniforge3/bin/activate && conda activate drone-sim
 ```
+
+---
+
+## CLI Reference
+
+### `train.py` — PPO training (headless)
+
+```bash
+python train.py [options]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--timesteps` | int | `3_000_000` | Total environment steps to train for (paper: 1×10⁸) |
+| `--n_envs` | int | `cpu_count` | Parallel SubprocVecEnv workers (paper: 100) |
+| `--num_gates` | int | `5` | Active gates for curriculum: `1`→`3`→`5` |
+| `--spawn_mid_course_prob` | float | `0.8` | Probability of mid-course spawn each episode (0–1) |
+| `--resume` | str | `""` | Path to `.zip` checkpoint to resume from; sets lr=5e-5 |
+| `--seed` | int | `42` | Global RNG seed |
+| `--device` | str | `"auto"` | PyTorch device: `auto` \| `cpu` \| `cuda` \| `mps` |
+| `--checkpoint_dir` | str | `./checkpoints` | Directory for periodic checkpoints |
+| `--log_dir` | str | `./logs` | TensorBoard log directory |
+| `--best_model_dir` | str | `./best_model` | Directory for best-eval-reward checkpoint |
+
+**Examples:**
+```bash
+# Full paper scale
+python train.py --timesteps 100_000_000 --n_envs 100
+
+# Curriculum
+python train.py --num_gates 1 --timesteps 1_000_000
+python train.py --num_gates 3 --timesteps 2_000_000 --resume best_model/best_model.zip
+python train.py --num_gates 5 --timesteps 3_000_000 --resume best_model/best_model.zip
+```
+
+---
+
+### `evaluate.py` — GUI evaluation
+
+```bash
+python evaluate.py [options]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--model` | str | `./best_model/best_model.zip` | Path to saved `.zip` policy |
+| `--map` | str | `"eval"` | Course to use: `eval` (unseen hook-shape) or `train` (S-curve) |
+| `--episodes` | int | `5` | Number of episodes to run |
+| `--num_gates` | int | `5` | Must match the training config |
+| `--render_fps` | int | `48` | Simulation playback pace (fps) |
+| `--record` | flag | off | Ask PyBullet to record GUI frames to video |
+| `--plot` | flag | off | Save 4-panel diagnostic PNG per episode (requires matplotlib) |
+| `--spawn_mid_course_prob` | float | `0.0` | Mid-course spawn probability (0 = always start at start line) |
+| `--gate_offset` | 3×float | `None` | Shift all gates by `DX DY DZ` metres — tests position generalisation |
+
+**In-GUI camera controls (keyboard):**
+
+| Key | Action |
+|---|---|
+| `V` | Toggle drone first-person POV / free camera |
+| `A` / `D` | Orbit yaw left / right (free camera) |
+| `W` / `S` | Tilt pitch up / down (free camera) |
+| `Q` / `E` | Zoom in / out (free camera) |
+| Arrow keys | Pan camera target (free camera) |
+
+**Examples:**
+```bash
+# Basic evaluation on the unseen eval map
+python evaluate.py --model ./best_model/best_model.zip
+
+# 10 episodes on the training map with diagnostic plots
+python evaluate.py --model ./checkpoints/drone_racing_ppo_final.zip \
+                   --map train --episodes 10 --plot
+
+# Test gate position generalisation (+2 m in X)
+python evaluate.py --model ./best_model/best_model.zip --gate_offset 2 0 0
+```
+
+---
+
+### `visualize.py` — Course map viewer
+
+```bash
+python visualize.py [options]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--map` | str | `"train"` | Course to display: `train` (S-curve) or `eval` (hook-shape) |
+| `--pybullet` | flag | off | Open PyBullet 3D GUI instead of matplotlib chart |
+
+**Examples:**
+```bash
+# Matplotlib top-down + 3D chart (no extra dependencies)
+python visualize.py
+python visualize.py --map eval
+
+# Live 3D PyBullet view (press Ctrl-C to quit)
+python visualize.py --pybullet
+python visualize.py --pybullet --map eval
+```
