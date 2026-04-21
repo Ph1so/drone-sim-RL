@@ -291,6 +291,7 @@ python train.py [options]
 | `--log_dir` | str | `./logs` | TensorBoard log directory |
 | `--best_model_dir` | str | `./best_model` | Directory for best-eval-reward checkpoint |
 | `--obs_noise` / `--no-obs-noise` | flag | `True` | Enable/disable ROM+RDM noise; use `--no-obs-noise` for Phase 1 curriculum |
+| `--ent_coef` | float | `0.01` | PPO entropy coefficient; raise to `0.05` to escape local optima, lower to `0.0` for final convergence |
 
 **Examples:**
 ```bash

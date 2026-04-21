@@ -195,8 +195,8 @@ def _save_traj_plot(
     Panel 2 — Speed (‖v‖) over time
         Total speed in m/s with gate passage markers.
 
-    Panel 3 — Roll & Pitch over time
-        Both in degrees with vertical markers where each gate was passed.
+    Panel 3 — Roll, Pitch & Yaw over time
+        All three in degrees with vertical markers where each gate was passed.
 
     Panel 4 — Angular velocity magnitude ‖ω‖ over time
         Shows whether instability builds gradually or spikes suddenly.
@@ -281,18 +281,20 @@ def _save_traj_plot(
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # ── Panel 3: Roll & Pitch ───────────────────────────────────────────
+    # ── Panel 3: Roll, Pitch & Yaw ─────────────────────────────────────
     ax = axes[2]
     roll_deg  = np.rad2deg(rpy[:, 0])
     pitch_deg = np.rad2deg(rpy[:, 1])
+    yaw_deg   = np.rad2deg(rpy[:, 2])
     ax.plot(steps, roll_deg,  color="tab:blue",   lw=1.5, label="roll")
     ax.plot(steps, pitch_deg, color="tab:orange",  lw=1.5, label="pitch")
+    ax.plot(steps, yaw_deg,   color="tab:green",   lw=1.5, label="yaw")
     ax.axhline(0, color="gray", ls=":", lw=0.7)
     for s in gate_pass_steps:
         ax.axvline(s, color="green", ls=":", lw=1, alpha=0.8)
     ax.set_xlabel("step")
     ax.set_ylabel("degrees")
-    ax.set_title("Roll & Pitch  (green verticals = gate passages)")
+    ax.set_title("Roll, Pitch & Yaw  (green verticals = gate passages)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
@@ -584,7 +586,7 @@ if __name__ == "__main__":
         "--plot",
         action  = "store_true",
         default = False,
-        help    = "Save a 3-panel diagnostic figure per episode: XY path, roll/pitch, ang-vel "
+        help    = "Save a 4-panel diagnostic figure per episode: XY path, speed, roll/pitch/yaw, ang-vel "
                   "(requires matplotlib; saved as eval_traj_ep<N>.png)",
     )
     parser.add_argument(

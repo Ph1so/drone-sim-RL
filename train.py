@@ -132,7 +132,7 @@ def main(args: argparse.Namespace) -> None:
         print(f"[train] Resuming from checkpoint: {args.resume}  lr={lr}")
         custom_objects = {
             "learning_rate": lr,
-            "ent_coef":      0.01,
+            "ent_coef":      args.ent_coef,
             "policy_kwargs": dict(
                 net_arch      = [128, 128],
                 activation_fn = _LeakyReLU02,
@@ -156,7 +156,7 @@ def main(args: argparse.Namespace) -> None:
             gamma           = GAMMA,
             gae_lambda      = GAE_LAMBDA,
             clip_range      = CLIP_RANGE,
-            ent_coef        = 0.01,
+            ent_coef        = args.ent_coef,
             learning_rate   = LR,
             policy_kwargs   = policy_kwargs,
             tensorboard_log = log_dir,
@@ -199,6 +199,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Mid-course prob : {spawn_mid_course_prob:.0%}")
     print(f"  Obs noise (ROM/RDM) : {obs_noise}")
     print(f"  Learning rate   : {lr}{' (override)' if args.lr is not None else ''}")
+    print(f"  Entropy coef    : {args.ent_coef}")
     print(f"  Device          : {args.device}")
     print(f"  {'─'*54}")
     print(f"  Reward  (exact Swift formulation)")
@@ -278,5 +279,10 @@ if __name__ == "__main__":
         "--obs_noise", action=argparse.BooleanOptionalAction, default=True,
         help="Enable ROM+RDM observation/dynamics noise (default: True). "
              "Use --no-obs-noise for Phase 1 curriculum to learn stable flight first.",
+    )
+    parser.add_argument(
+        "--ent_coef", type=float, default=0.01,
+        help="PPO entropy coefficient — encourages exploration (default: %(default)s). "
+             "Raise to 0.05 to escape local optima; lower to 0.0 for final convergence.",
     )
     main(parser.parse_args())
