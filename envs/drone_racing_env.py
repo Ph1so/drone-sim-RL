@@ -339,11 +339,15 @@ class DroneRacingEnv(BaseAviary):
         cache["gate_passed"] = gate_passed
 
         # Record gate-crossing state into the per-gate buffer (Swift paper).
-        # _idx has already been incremented by update(), so the gate just passed
-        # is at index _idx - 1.  The full drone state is captured at crossing time
-        # so future spawns get realistic velocity, attitude, and body rates.
+        # _idx has already been incremented by update(); normally passed gate = _idx-1.
+        # EXCEPTION: on lap completion gate_manager resets _idx to 0 immediately,
+        # so _idx-1 = -1 which would fail the bounds check and lose the last gate's
+        # crossing.  Detect this case via the lap_complete flag.
         if gate_passed:
-            passed_idx = self._gate_manager._idx - 1
+            if self._gate_manager.lap_complete:
+                passed_idx = len(self._gate_manager.gates) - 1   # last gate
+            else:
+                passed_idx = self._gate_manager._idx - 1
             if 0 <= passed_idx < len(self._gate_buffer):
                 self._record_gate_crossing(passed_idx, cache["state"])
 
