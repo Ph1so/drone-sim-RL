@@ -289,13 +289,17 @@ python train.py [options]
 | `--checkpoint_dir` | str | `./checkpoints` | Directory for periodic checkpoints |
 | `--log_dir` | str | `./logs` | TensorBoard log directory |
 | `--best_model_dir` | str | `./best_model` | Directory for best-eval-reward checkpoint |
+| `--obs_noise` / `--no-obs-noise` | flag | `True` | Enable/disable ROM+RDM noise; use `--no-obs-noise` for Phase 1 curriculum |
 
 **Examples:**
 ```bash
 # Full paper scale
 python train.py --timesteps 100_000_000 --n_envs 100
 
-# Curriculum
+# Curriculum (Phase 1: learn stable flight without noise)
+python train.py --num_gates 1 --timesteps 5_000_000 --no-obs-noise
+
+# Curriculum (Phase 2+: add noise domain randomisation)
 python train.py --num_gates 1 --timesteps 1_000_000
 python train.py --num_gates 3 --timesteps 2_000_000 --resume best_model/best_model.zip
 python train.py --num_gates 5 --timesteps 3_000_000 --resume best_model/best_model.zip

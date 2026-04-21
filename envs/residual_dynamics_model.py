@@ -77,20 +77,21 @@ class ResidualDynamicsModel:
     L_TILT:     float = 0.8   # rad
 
     # ── Residual force amplitude σ_f(state) = base + k_v·speed + k_ω·ang_rate ──
-    # Calibrated against Extended Data Fig. 1a (force residual ≈ ±0.3 N at
-    # race speeds for the Z axis, smaller for X/Y).
-    _FORCE_BASE:  float = 0.03   # N     — hover residual
-    _FORCE_KV:    float = 0.02   # N per m/s
-    _FORCE_KW:    float = 0.01   # N per rad/s
+    # Reduced from original (0.03/0.02/0.01/0.50) to values a 48 Hz policy can
+    # reject without a PID inner loop.  The paper's drone had a 500–1000 Hz
+    # Betaflight inner loop absorbing these forces before the RL policy saw them.
+    _FORCE_BASE:  float = 0.005  # N     — hover residual
+    _FORCE_KV:    float = 0.005  # N per m/s
+    _FORCE_KW:    float = 0.003  # N per rad/s
 
     # ── Residual torque amplitude ──────────────────────────────────────────────
-    _TORQUE_BASE: float = 0.002  # N·m
-    _TORQUE_KV:   float = 0.001  # N·m per m/s
-    _TORQUE_KW:   float = 0.001  # N·m per rad/s
+    _TORQUE_BASE: float = 0.001  # N·m
+    _TORQUE_KV:   float = 0.0005 # N·m per m/s
+    _TORQUE_KW:   float = 0.0005 # N·m per rad/s
 
     # ── Hard clamps ───────────────────────────────────────────────────────────
-    _MAX_FORCE_N:  float = 0.50   # N      (~180% of CF2X weight, hard ceiling)
-    _MAX_TORQUE_NM: float = 0.025 # N·m
+    _MAX_FORCE_N:  float = 0.10   # N      (~37% of CF2X weight — rejectable at 48 Hz)
+    _MAX_TORQUE_NM: float = 0.010 # N·m
 
     # ─────────────────────────────────────────────────────────────────────────
 

@@ -61,10 +61,16 @@ _LeakyReLU02 = functools.partial(nn.LeakyReLU, negative_slope=0.2)
 # Environment factory
 # ══════════════════════════════════════════════════════════════════════════════
 
-def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5, spawn_mid_course_prob: float = 0.8):
+def make_env(rank: int = 0, seed: int = 0, num_gates: int = 5,
+             spawn_mid_course_prob: float = 0.8, obs_noise: bool = True):
     """Return a callable that creates a single DroneRacingEnv."""
     def _init():
-        env = DroneRacingEnv(gui=False, num_gates=num_gates, spawn_mid_course_prob=spawn_mid_course_prob)
+        env = DroneRacingEnv(
+            gui=False,
+            num_gates=num_gates,
+            spawn_mid_course_prob=spawn_mid_course_prob,
+            obs_noise=obs_noise,
+        )
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -88,22 +94,28 @@ def main(args: argparse.Namespace) -> None:
     num_gates             = args.num_gates
     spawn_mid_course_prob = args.spawn_mid_course_prob
 
+    obs_noise = args.obs_noise
+
     # ── Vectorised training environments ─────────────────────────────
     if n_envs > 1:
         train_env = SubprocVecEnv(
             [make_env(rank=i, seed=args.seed, num_gates=num_gates,
-                      spawn_mid_course_prob=spawn_mid_course_prob)
+                      spawn_mid_course_prob=spawn_mid_course_prob,
+                      obs_noise=obs_noise)
              for i in range(n_envs)]
         )
     else:
         from stable_baselines3.common.vec_env import DummyVecEnv
         train_env = DummyVecEnv([make_env(rank=0, seed=args.seed, num_gates=num_gates,
-                                          spawn_mid_course_prob=spawn_mid_course_prob)])
+                                          spawn_mid_course_prob=spawn_mid_course_prob,
+                                          obs_noise=obs_noise)])
 
     train_env = VecMonitor(train_env)
 
     # ── Evaluation environment — no mid-course spawns for clean metrics ──
-    eval_env = DroneRacingEnv(gui=False, num_gates=num_gates, spawn_mid_course_prob=0.0)
+    eval_env = DroneRacingEnv(
+        gui=False, num_gates=num_gates, spawn_mid_course_prob=0.0, obs_noise=obs_noise
+    )
 
     # ── Policy kwargs — Swift: flat 2×128 MLP with LeakyReLU(α=0.2) ────
     # net_arch=[128, 128] → shared backbone only; pi=[] vf=[] means no
@@ -183,6 +195,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  N_steps/worker  : {N_STEPS}  (= episode length)")
     print(f"  Active gates    : {num_gates} / {len(RACE_GATES)}")
     print(f"  Mid-course prob : {spawn_mid_course_prob:.0%}")
+    print(f"  Obs noise (ROM/RDM) : {obs_noise}")
     print(f"  Learning rate   : {lr}")
     print(f"  Device          : {args.device}")
     print(f"  {'─'*54}")
@@ -253,5 +266,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--spawn_mid_course_prob", type=float, default=0.8,
         help="Probability of spawning mid-course each episode (0–1, default: %(default)s)",
+    )
+    parser.add_argument(
+        "--obs_noise", action=argparse.BooleanOptionalAction, default=True,
+        help="Enable ROM+RDM observation/dynamics noise (default: True). "
+             "Use --no-obs-noise for Phase 1 curriculum to learn stable flight first.",
     )
     main(parser.parse_args())
