@@ -28,8 +28,8 @@ Policy trained with PPO (stable-baselines3), following the Swift system architec
 │         │                  │                     │           │
 │         └──────────────────┴─────────────────────┘           │
 │                            ↓                                 │
-│          _computeObs() → 31-D flat observation               │
-│          [ pos(3) | vel(3) | rot(9) | corners(12) | act(4) ] │
+│          _computeObs() → 34-D flat observation                        │
+│          [ pos(3) | vel(3) | rot(9) | corners(12) | act(4) | ω(3) ]  │
 │                            ↓  ↑ action                       │
 └────────────────────────────┼──┘──────────────────────────────┘
                              │
@@ -201,7 +201,7 @@ observations). Records per-episode breakdown of all reward components via the
 
 ## Observation Space
 
-Flat `Box(31,)` — identical to the Swift paper input:
+Flat `Box(34,)` — Swift paper base + angular velocity extension:
 
 | Slice | Content | Why |
 |-------|---------|-----|
@@ -210,6 +210,7 @@ Flat `Box(31,)` — identical to the Swift paper input:
 | `[6:15]` | Rotation matrix, body→world, row-major | Attitude without quaternion discontinuities (Zhou et al. 2019) |
 | `[15:27]` | 4 gate-corner positions in drone body frame (m) | Geometry-complete gate representation; swappable with CV output |
 | `[27:31]` | Previous raw policy action at t−1 | Temporal context for smooth control |
+| `[31:34]` | Angular velocity, body frame (rad/s) | Derivative feedback for oscillation damping; always clean (IMU, not VIO-drifted) |
 
 When the ROM is enabled, slices `[0:3]`, `[3:6]`, and `[6:15]` carry drifted
 estimates; `[15:27]` is recomputed from those estimates so the gate-corner

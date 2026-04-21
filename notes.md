@@ -589,3 +589,33 @@ Start from scratch with 2 gates. Expand to 5 once 2/2 laps complete consistently
 - Agent clears 3/5 gates consistently.
 - Falls out of the air shortly after Gate 3 — likely a physical stall from extreme banking, or an OOB termination while maneuvering for Gate 4.
 - Suspected cause: agent memorized the specific visual layout of the training course rather than learning generalizable gate-tracking behavior.
+
+---
+
+## 2026-04-21 — Observation space extended: 31-D → 34-D (angular velocity added)
+
+### Problem
+Yaw oscillation (±150° hunting) persisted through Phase 2a, 3a, and was not removed by
+the ROM's indirect ω-scaling pressure or the λ₄ body-rate penalty. Root cause: the policy
+was controlling a second-order rotational system with only position (attitude) feedback and
+no angular rate feedback. Without seeing its own rotation speed, it cannot implement
+damping — it overshoots, corrects, overshoots again.
+
+### Change
+Added `ang_vel` (body-frame angular velocity, 3-D, rad/s) as observation slots [31:34].
+
+- Always clean — derived from IMU (not VIO-drifted), so ROM does not touch it even when
+  obs_noise=True.
+- Provides the D-term the policy was missing: "I am rotating at X rad/s → reduce command."
+- Analogous to the role Betaflight's inner loop plays in the Swift paper (reads IMU angular
+  rate and damps it via PID). Here the policy learns the damping behaviour directly.
+
+### Files changed
+- `envs/drone_racing_env.py`: `_observationSpace` shape (31,)→(34,); `_computeObs` appends
+  `ang_vel.astype(float32)`; docstrings updated.
+- `train.py`: banner updated (obs dim 31→34).
+- `README.md`: observation space table updated.
+- `AGENTS.md`: observation section rewritten; stale GateObsExtractor references removed.
+
+### Checkpoint compatibility
+**Breaking change — existing checkpoints are incompatible.** Must train from scratch.

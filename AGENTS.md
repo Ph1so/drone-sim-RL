@@ -54,12 +54,18 @@ assets/gate.urdf           ← 1.4 × 1.4 m gate mesh
 
 ### Observation
 
-Two-branch Dict observation fed to `GateObsExtractor` in `train.py`:
+Flat `Box(34,)` observation — `MlpPolicy` in `train.py`, no custom feature extractor needed.
 
-- `"telemetry"` `Box(13)` — `[pos_rel_gate(3), quat(4), lin_vel(3), ang_vel(3)]`. Position is relative to the **current gate center**, not world origin.
-- `"gate_obs"` `Box(10)` — `[curr_gate(5), next_gate(5)]` in the drone's yaw frame. Each 5-tuple: `[rel_x, rel_y, rel_z, dist, gate_yaw_err]`. The `next_*` slice is all zeros on the last gate.
+| Slice | Content | Notes |
+|---|---|---|
+| `[0:3]` | Position, world frame (m) | ROM-drifted when obs_noise=True |
+| `[3:6]` | Linear velocity, world frame (m/s) | ROM-drifted when obs_noise=True |
+| `[6:15]` | Rotation matrix body→world, row-major | ROM attitude error composed in |
+| `[15:27]` | 4 gate-corner positions in drone body frame (m) | Recomputed from drifted pos/rot |
+| `[27:31]` | Previous raw policy action at t−1 | Always clean |
+| `[31:34]` | Angular velocity, body frame (rad/s) | Always clean — IMU, not VIO |
 
-Noise is **distance-scaled**: `σ = gate_noise_std × max(dist / 3.0, 0.2)`. Far gates are noisier. Do not flatten this to a uniform noise model.
+`[31:34]` provides derivative (D-term) feedback so the policy can damp angular oscillations — the root cause of the yaw-hunting behaviour observed in Phases 2a–3a.
 
 ### Step Cache
 
@@ -67,20 +73,19 @@ Noise is **distance-scaled**: `σ = gate_noise_std × max(dist / 3.0, 0.2)`. Far
 
 ### Perception Swap Point
 
-The policy was designed to accept CV-estimated gate observations at competition time. The only interface is `_compute_gate_obs()` in `drone_racing_env.py:_computeObs()`. Replace that call with a CV module that outputs the same 10-float format. **Policy weights and `GateObsExtractor` require zero changes.**
+The policy was designed to accept CV-estimated gate observations at competition time. The only interface is `_compute_gate_corners_body_frame()` in `drone_racing_env.py:_computeObs()`. Replace that call with a CV module that outputs the same 12-float format (4 corners × 3-D body frame). **Policy weights require zero changes.**
 
 ## Critical Design Decisions — Do Not Undo
 
 ### Reward shape
 
-The catapult-and-crash policy (fly fast at gate 1, crash into it for the bonus) was a persistent failure mode. The current reward structure defeats it by design:
+The hover exploit (park ~0.5 m from G1, collect perception + tiny progress ≈ +6.5/episode) was a persistent failure mode. The current reward structure defeats it by design:
 
-- Velocity reward is `tanh`-saturated — unbounded speed has no extra value.
-- Gate 1 bonus (80) < collision penalty (100) — crashing at gate 1 is net-negative.
-- Gate bonuses escalate (`80 × gates_cleared`) — later gates are worth exponentially more.
-- Proximity + heading + velocity-alignment rewards only matter near the gate — no incentive to overshoot.
+- Gate passage bonus (+10) > full-episode hover value (+6.5) — passing the gate must be worth more than hovering.
+- Crash penalty (−5) fires on collision — crashing at a gate is net-negative.
+- Lap completion bonus (+30) incentivises the G5→G1 return leg; without it, crashing after G5 (≈+55) beats a clean lap.
 
-Do not raise the gate bonus above the collision penalty, remove `tanh` from the velocity term, or revert to a linear velocity reward.
+Do not reduce the gate passage bonus below the hover equilibrium value, and do not raise it above the crash penalty magnitude.
 
 ### Vertical velocity penalty is disabled
 
@@ -194,7 +199,7 @@ Gate pass detection: signed distance to gate plane transitions `≤ 0 → > 0` w
 | Task | Where to edit | Watch out for |
 |---|---|---|
 | Tune a reward term | `envs/reward.py` — `RewardComputer` | Keep gate bonus < crash penalty |
-| Add an obs field | `drone_racing_env.py:_computeObs` + observation space definition + `GateObsExtractor` in `train.py` | Old checkpoints become incompatible |
+| Add an obs field | `drone_racing_env.py:_computeObs` + observation space definition (shape tuple) | Old checkpoints become incompatible |
 | Change gate layout | `gate_manager.py` top-level gate list | Update `visualize.py` if it hardcodes positions |
 | Adjust noise | `DroneRacingEnv(gate_noise_std=...)` in `train.py` | Distance-scaling is intentional; don't flatten |
 | Change PPO hyperparams | `train.py` `model = PPO(...)` block | `n_steps × n_envs` must be divisible by `batch_size` |

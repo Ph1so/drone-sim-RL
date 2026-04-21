@@ -8,9 +8,9 @@ Action space
 Box(4,)  — normalised [Throttle, Roll, Pitch, Yaw] each in [−1, +1].
 Mapped to per-motor RPMs via a classical quadrotor mixer.
 
-Observation space  (matches Swift paper, Kaufmann et al. 2023)
+Observation space  (Swift paper + angular velocity extension)
 -----------------
-Box(31,)  — flat float32 vector:
+Box(34,)  — flat float32 vector:
   [0:3]   position in world frame (m)
   [3:6]   linear velocity in world frame (m/s)
   [6:15]  attitude as rotation matrix (body→world), flattened row-major (9-D)
@@ -18,6 +18,9 @@ Box(31,)  — flat float32 vector:
   [15:27] next-gate corners in drone body frame (4 corners × 3-D = 12-D)
            Corners are the four vertices of the gate inner opening (±0.6 m).
   [27:31] previous action applied at t−1 (4-D)
+  [31:34] angular velocity in body frame (rad/s, 3-D)
+           Provides derivative feedback so the policy can damp oscillations.
+           Always clean (IMU-derived, not drifted by ROM).
 
 Reward / termination
 --------------------
@@ -159,11 +162,11 @@ class DroneRacingEnv(BaseAviary):
         )
 
     def _observationSpace(self) -> spaces.Box:
-        """31-D flat observation matching Swift paper (Kaufmann et al. 2023)."""
+        """34-D flat observation (Swift paper + angular velocity for damping feedback)."""
         return spaces.Box(
             low  = -np.inf,
             high =  np.inf,
-            shape = (31,),
+            shape = (34,),
             dtype = np.float32,
         )
 
@@ -282,9 +285,7 @@ class DroneRacingEnv(BaseAviary):
     # ------------------------------------------------------------------
     def _computeObs(self) -> np.ndarray:
         """
-        Build 31-D flat observation matching Swift paper (Kaufmann et al. 2023),
-        with optional state-dependent Ornstein-Uhlenbeck drift injected by the
-        ResidualObservationModel to bridge the sim-to-real gap.
+        Build 34-D flat observation (Swift paper base + angular velocity).
 
         Layout:
           [0:3]   position world frame          (drifted when obs_noise=True)
@@ -292,6 +293,7 @@ class DroneRacingEnv(BaseAviary):
           [6:15]  rotation matrix body→world    (attitude error composed in)
           [15:27] next-gate corners, body frame (recomputed from drifted pos/rot)
           [27:31] previous action               (always clean)
+          [31:34] angular velocity body frame   (always clean — IMU, not VIO)
         """
         cache = self._get_step_state()
         state = cache["state"]
@@ -325,12 +327,13 @@ class DroneRacingEnv(BaseAviary):
         prev_action = self._last_action                      # (4,) float32
 
         return np.concatenate([
-            pos_obs.astype(np.float32),    # 3
-            vel_obs.astype(np.float32),    # 3
+            pos_obs.astype(np.float32),            # 3
+            vel_obs.astype(np.float32),            # 3
             rot_obs.flatten().astype(np.float32),  # 9
-            gate_corners,                  # 12
-            prev_action,                   # 4
-        ])   # total: 31, dtype float32
+            gate_corners,                          # 12
+            prev_action,                           # 4
+            ang_vel.astype(np.float32),            # 3  — clean IMU rates for damping feedback
+        ])   # total: 34, dtype float32
 
     # ------------------------------------------------------------------
     def _computeReward(self) -> float:

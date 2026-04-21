@@ -3,7 +3,7 @@ train.py — PPO training script for DroneRacingEnv.
 
 Architecture  (matches Swift paper, Kaufmann et al. 2023)
 ------------
-  MlpPolicy — flat 31-D observation → 2-layer MLP (128 × 128, LeakyReLU α=0.2)
+  MlpPolicy — flat 34-D observation → 2-layer MLP (128 × 128, LeakyReLU α=0.2)
   No custom feature extractor.  Policy and value heads each get a 128-unit hidden
   layer on top of the shared backbone.
 
@@ -191,7 +191,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"\n{'='*60}")
     print(f"  DroneRacing PPO  —  Swift architecture (Kaufmann et al. 2023)")
     print(f"  Policy          : MlpPolicy  2×128  LeakyReLU(α=0.2)")
-    print(f"  Obs dim         : 31  (pos·vel·rotmat·gate_corners·prev_action)")
+    print(f"  Obs dim         : 34  (pos·vel·rotmat·gate_corners·prev_action·ang_vel)")
     print(f"  Total timesteps : {args.timesteps:,}")
     print(f"  Parallel envs   : {n_envs}  (paper: 100)")
     print(f"  N_steps/worker  : {N_STEPS}  (= episode length)")
