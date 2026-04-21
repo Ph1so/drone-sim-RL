@@ -28,7 +28,7 @@ from .gate_manager import GateManager
 
 # ── Boundary box (world coordinates) ─────────────────────────────────────────
 # x_min, y_min, z_min, x_max, y_max, z_max
-WORLD_BOUNDS = np.array([-3.0, -3.0, 0.05, 12.0, 10.0, 6.0], dtype=np.float64)
+WORLD_BOUNDS = np.array([-3.0, -3.0, 0, 15.0, 15.0, 15.0], dtype=np.float64)
 
 class RewardComputer:
     """
