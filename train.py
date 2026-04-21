@@ -126,10 +126,12 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # ── PPO model ─────────────────────────────────────────────────────
+    lr = args.lr if args.lr is not None else (1e-4 if args.resume else LR)
+
     if args.resume:
-        print(f"[train] Resuming from checkpoint: {args.resume}")
+        print(f"[train] Resuming from checkpoint: {args.resume}  lr={lr}")
         custom_objects = {
-            "learning_rate": 5e-5,
+            "learning_rate": lr,
             "policy_kwargs": dict(
                 net_arch      = [128, 128],
                 activation_fn = _LeakyReLU02,
@@ -185,7 +187,6 @@ def main(args: argparse.Namespace) -> None:
 
     # ── Train ─────────────────────────────────────────────────────────
     rc = RewardComputer
-    lr = 5e-5 if args.resume else LR
     print(f"\n{'='*60}")
     print(f"  DroneRacing PPO  —  Swift architecture (Kaufmann et al. 2023)")
     print(f"  Policy          : MlpPolicy  2×128  LeakyReLU(α=0.2)")
@@ -196,7 +197,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Active gates    : {num_gates} / {len(RACE_GATES)}")
     print(f"  Mid-course prob : {spawn_mid_course_prob:.0%}")
     print(f"  Obs noise (ROM/RDM) : {obs_noise}")
-    print(f"  Learning rate   : {lr}")
+    print(f"  Learning rate   : {lr}{' (override)' if args.lr is not None else ''}")
     print(f"  Device          : {args.device}")
     print(f"  {'─'*54}")
     print(f"  Reward  (exact Swift formulation)")
@@ -266,6 +267,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--spawn_mid_course_prob", type=float, default=0.8,
         help="Probability of spawning mid-course each episode (0–1, default: %(default)s)",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=None,
+        help="Learning rate override. Defaults: 3e-4 (fresh), 1e-4 (--resume curriculum), "
+             "or pass 5e-5 for same-task fine-tuning.",
     )
     parser.add_argument(
         "--obs_noise", action=argparse.BooleanOptionalAction, default=True,

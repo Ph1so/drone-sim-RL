@@ -283,7 +283,8 @@ python train.py [options]
 | `--n_envs` | int | `cpu_count` | Parallel SubprocVecEnv workers (paper: 100) |
 | `--num_gates` | int | `5` | Active gates for curriculum: `1`→`3`→`5` |
 | `--spawn_mid_course_prob` | float | `0.8` | Probability of mid-course spawn each episode (0–1) |
-| `--resume` | str | `""` | Path to `.zip` checkpoint to resume from; sets lr=5e-5 |
+| `--resume` | str | `""` | Path to `.zip` checkpoint to resume from |
+| `--lr` | float | `None` | Learning rate override (`3e-4` fresh · `1e-4` curriculum resume · `5e-5` same-task fine-tune) |
 | `--seed` | int | `42` | Global RNG seed |
 | `--device` | str | `"auto"` | PyTorch device: `auto` \| `cpu` \| `cuda` \| `mps` |
 | `--checkpoint_dir` | str | `./checkpoints` | Directory for periodic checkpoints |
