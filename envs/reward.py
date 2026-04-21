@@ -62,6 +62,16 @@ class RewardComputer:
     MAX_BODY_RATE_RAD_S:  float = 12.0   # rad/s — maps normalised ±1 to ±12 rad/s
     MAX_THRUST_N:         float = 4.0    # N     — maps normalised ±1 to ±4 N
 
+    # ── Gate passage bonus ────────────────────────────────────────────────────
+    # Not in the Swift paper — their physical platform can't hover stably in
+    # front of a gate at race speeds so the exploit doesn't exist on hardware.
+    # In sim at 48 Hz the policy finds a hover local optimum: park ~0.5 m in
+    # front of G1, collect perception + tiny progress ≈ +6.5/episode, never
+    # risk crashing.  A passage bonus breaks this: one gate pass must be worth
+    # more than the full-episode hover.
+    # +10 chosen so: pass bonus (+10) + approach net (+3) ≈ +13 > +6.5 hover.
+    GATE_PASSAGE_BONUS: float = 10.0
+
     # ── Terminal reward ────────────────────────────────────────────────────
     # Paper: subtract r_crash=5.0; implemented as adding CRASH_PENALTY=−5.0.
     CRASH_PENALTY: float = -5.0
@@ -157,9 +167,12 @@ class RewardComputer:
         r_body_rate  = self.LAMBDA_4 * float(np.dot(omega_cmd, omega_cmd))
         info["r_body_rate"] = round(r_body_rate, 6)
 
-        # ── 5. Gate passage tracking (info only — no bonus reward) ───────────
+        # ── 5. Gate passage bonus ─────────────────────────────────────────────
+        r_gate_bonus = 0.0
         if gate_passed:
+            r_gate_bonus = self.GATE_PASSAGE_BONUS
             info["gate_passed"] = True
+            info["r_gate_bonus"] = r_gate_bonus
             if self._gm.lap_complete:
                 info["lap_complete"] = True
 
@@ -173,7 +186,7 @@ class RewardComputer:
             info["collision"] = collision
             info["out_of_bounds"] = self._is_oob(drone_pos)
 
-        reward = r_prog + r_perc + r_jerk + r_body_rate + r_crash
+        reward = r_prog + r_perc + r_jerk + r_body_rate + r_gate_bonus + r_crash
 
         info["num_gates_passed"] = self._gm.num_passed
         info["r_crash"]          = r_crash

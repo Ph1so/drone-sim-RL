@@ -41,11 +41,12 @@ EVAL_DIR = "./eval_trajectories"
 # ── Reward breakdown keys (must match reward.py) ──────────────────────────────
 
 _BREAKDOWN_KEYS = [
-    ("r_prog",       "progress"),
-    ("r_perc",       "perception"),
-    ("r_jerk",       "jerk"),
-    ("r_body_rate",  "body rate"),
-    ("r_crash",      "crash"),
+    ("r_prog",        "progress"),
+    ("r_perc",        "perception"),
+    ("r_gate_bonus",  "gate bonus"),
+    ("r_jerk",        "jerk"),
+    ("r_body_rate",   "body rate"),
+    ("r_crash",       "crash"),
 ]
 
 
@@ -401,7 +402,8 @@ def evaluate(args: argparse.Namespace) -> None:
     env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates,
                          gate_pos_offset=gate_offset,
                          spawn_mid_course_prob=args.spawn_mid_course_prob,
-                         map_name=args.map)
+                         map_name=args.map,
+                         obs_noise=args.obs_noise)
 
     _draw_oob_wireframe(env.CLIENT)
 
@@ -592,5 +594,10 @@ if __name__ == "__main__":
         choices = ["train", "eval"],
         help    = "Racecourse to use: 'eval' (unseen hook-shape, default) or "
                   "'train' (S-curve seen during training; default: %(default)s)",
+    )
+    parser.add_argument(
+        "--obs_noise", action=argparse.BooleanOptionalAction, default=False,
+        help="Enable ROM+RDM observation/dynamics noise (default: False — clean ground-truth). "
+             "Use --obs_noise when evaluating a policy trained with noise enabled.",
     )
     evaluate(parser.parse_args())

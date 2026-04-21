@@ -90,6 +90,59 @@ It was causing asymmetric reward cliffs below gate Z. The altitude alignment pen
 
 Training from scratch on 5 gates fails to converge. Always use the 1→3→5 gate curriculum when starting fresh policies or making large architecture changes.
 
+## Curriculum Progress Tracker
+
+**Agent instructions:** Whenever the user shares a TensorBoard screenshot, evaluate.py output, or any training update, update the Status column of this table and add the observed metrics in the Notes column. Do not move a phase to ✅ Complete based on `ep_len` alone — `gates_passed > 0` in the evaluate.py summary is required to confirm real progress. A policy that survives 1500 steps with 0 gates passed has found a hover local optimum, not a racing strategy.
+
+Status emoji convention: ✅ Complete · 🔄 In progress · ⏳ Pending · ❌ Stuck/regressed
+
+| Phase | Gates | `--no-obs-noise` | `spawn_prob` | Status | Move on when | Notes |
+|---|---|---|---|---|---|---|
+| 1 | 1 | yes | 0.0 | ✅ Complete | ep_len → 1500 | Achieved ep_len=1500; erratic but stable |
+| 2a | 3 | yes | 0.0 | 🔄 In progress | ep_len > 1200 **and** eval gates_passed ≥ 1 | Hover exploit discovered (+6.5 hovering G1); gate passage bonus (+10) added to reward to break it |
+| 2b | 3 | yes | 0.5 | ⏳ Pending | eval gates_passed ≥ 2 consistently | — |
+| 3a | 5 | yes | 0.5 | ⏳ Pending | ep_len > 1200 on full course | — |
+| 3b | 5 | no | 0.8 | ⏳ Pending | eval reward > +10 | — |
+
+**Commands for each phase:**
+
+```bash
+# Phase 1 (complete)
+python train.py --num_gates 1 --timesteps 5_000_000 --no-obs-noise --spawn_mid_course_prob 0.0
+
+# Phase 2a (current)
+python train.py --num_gates 3 --timesteps 10_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.0
+
+# Phase 2b
+python train.py --num_gates 3 --timesteps 10_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.5
+
+# Phase 3a
+python train.py --num_gates 5 --timesteps 15_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.5
+
+# Phase 3b (full paper config)
+python train.py --num_gates 5 --timesteps 20_000_000 --resume best_model/best_model.zip --spawn_mid_course_prob 0.8
+```
+
+**Always match evaluate.py flags to training config:**
+
+```bash
+# Example: Phase 2a was trained with --num_gates 3 --no-obs-noise
+python evaluate.py --model best_model/best_model.zip --map train --num_gates 3
+# obs_noise defaults to False in evaluate.py — matches --no-obs-noise training
+# For policies trained WITH noise: add --obs_noise flag
+```
+
+Mismatch symptom: training shows reward +X but evaluate.py shows -5. Root cause is almost always `obs_noise` defaulting to `True` in the environment while training used `False`, or `num_gates` mismatch loading extra gate bodies.
+
+**Key diagnostics to check at each update:**
+
+| Metric | Where | Healthy sign |
+|---|---|---|
+| `rollout/ep_len_mean` | TensorBoard | Rising toward 1500 |
+| `eval/mean_reward` | TensorBoard | Rising, eventually > 0 |
+| `gates_passed` | evaluate.py summary | Must be > 0 before advancing |
+| Reward breakdown | evaluate.py summary | `progress` dominant, `crash` shrinking |
+
 ### Mid-course spawning
 
 `spawn_mid_course_prob` teleports the drone to a random gate approach at episode start. This bootstraps value function learning for gate transitions the policy would rarely reach organically early in training. Do not set this to 0 during early curriculum stages.

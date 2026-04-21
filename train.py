@@ -132,6 +132,7 @@ def main(args: argparse.Namespace) -> None:
         print(f"[train] Resuming from checkpoint: {args.resume}  lr={lr}")
         custom_objects = {
             "learning_rate": lr,
+            "ent_coef":      0.01,
             "policy_kwargs": dict(
                 net_arch      = [128, 128],
                 activation_fn = _LeakyReLU02,
@@ -155,7 +156,7 @@ def main(args: argparse.Namespace) -> None:
             gamma           = GAMMA,
             gae_lambda      = GAE_LAMBDA,
             clip_range      = CLIP_RANGE,
-            ent_coef        = 0.0,
+            ent_coef        = 0.01,
             learning_rate   = LR,
             policy_kwargs   = policy_kwargs,
             tensorboard_log = log_dir,
