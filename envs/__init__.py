@@ -2,8 +2,16 @@
 # (and its transitive deps like transforms3d) when only gate/reward data is needed.
 from .gate_manager import GateManager, Gate, RACE_GATES
 from .reward import RewardComputer
+from .residual_obs_model import ResidualObservationModel
+from .residual_dynamics_model import ResidualDynamicsModel
 
-__all__ = ["DroneRacingEnv", "GateManager", "Gate", "RACE_GATES", "RewardComputer"]
+__all__ = [
+    "DroneRacingEnv",
+    "GateManager", "Gate", "RACE_GATES",
+    "RewardComputer",
+    "ResidualObservationModel",
+    "ResidualDynamicsModel",
+]
 
 
 def __getattr__(name: str):

@@ -65,11 +65,11 @@ PASS_MARGIN  = 1.10   # scale factor: slightly larger acceptance window
 #
 _GATE_DEFS = [
     #  pos (x, y, z-center)     yaw_deg   label
-    ([ 0.0,  4.0,  1.50],    0.0,  "G1"),   # N exit   — straight from spawn
-    ([ 6.0,  6.0,  2.00],  -75.0,  "G2"),   # ENE exit — RIGHT + climb
-    ([ 2.5,  8.5,  1.20],   50.0,  "G3"),   # NNW exit — LEFT  + dive
-    ([ 8.5,  7.0,  1.80], -110.0,  "G4"),   # ESE exit — RIGHT + climb
-    ([ 8.0,  1.5,  1.50], -160.0,  "G5"),   # SSE exit — RIGHT + descent
+    ([ 1.0,  2.0,  1.00],     0.0,  "G1"),   # N exit   — straight from spawn
+    ([ 3.0,  4.0,  2.00],   -75.0,  "G2"),   # ENE exit — RIGHT + climb
+    ([ 2.5,  7.0,  1.20],    20.0,  "G3"),   # NNW exit — LEFT  + dive
+    ([ 8.5,  7.0,  1.80],  -160.0,  "G4"),   # ESE exit — RIGHT + climb
+    ([ 8.0,  1.5,  0.50],   160.0,  "G5"),   # SSE exit — RIGHT + descent
 ]
 
 #  ── "eval" map — hook shape with mirrored turn sequence ───────────────────────

@@ -19,6 +19,12 @@ Policy trained with PPO (stable-baselines3), following the Swift system architec
 │  │ gate pass   │  │ prog + perc      │  │ 9 GP draws,    │  │
 │  │ detection   │  │ + cmd − crash    │  │ per episode    │  │
 │  └──────┬──────┘  └────────┬─────────┘  └───────┬────────┘  │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │ Residual Dynamics Model (RDM)                        │   │
+│  │ 6 GP draws → [f_x,f_y,f_z, τ_x,τ_y,τ_z]            │   │
+│  │ Applied as body-frame force+torque each step         │   │
+│  └──────────────────────────────────────────────────────┘   │
 │         │                  │                     │           │
 │         └──────────────────┴─────────────────────┘           │
 │                            ↓                                  │
@@ -88,15 +94,19 @@ A gate is passed when the drone's signed distance to the gate plane transitions
 `≤ 0 → > 0` while the drone's lateral and vertical projection onto the gate is
 within ±0.60 m of centre.
 
-**Racecourse** (5-gate oval, `RACE_GATES`):
+**Racecourse** (5-gate S-curve "train" map, `RACE_GATES`):
 
-| Gate | Position (m)        | Yaw    |
-|------|---------------------|--------|
-| G1   | `[0.0, 2.5, 1.5]`  | 0°     |
-| G2   | `[2.5, 5.0, 1.5]`  | −40°   |
-| G3   | `[5.5, 5.5, 1.5]`  | −90°   |
-| G4   | `[7.5, 2.8, 1.5]`  | −135°  |
-| G5   | `[5.0, 0.5, 1.5]`  | 180°   |
+Turn sequence: RIGHT, LEFT, RIGHT, RIGHT, LEFT — mixed altitude variation.
+
+| Gate | Position (m)          | Yaw     | Exit direction | Note                 |
+|------|-----------------------|---------|----------------|----------------------|
+| G1   | `[0.0,  4.0,  1.50]` | 0°      | N              | Straight from spawn  |
+| G2   | `[6.0,  6.0,  2.00]` | −75°    | ENE            | Right turn + climb   |
+| G3   | `[2.5,  8.5,  1.20]` | +50°    | NNW            | Left turn + dive     |
+| G4   | `[8.5,  7.0,  1.80]` | −110°   | ESE            | Right turn + climb   |
+| G5   | `[8.0,  1.5,  1.50]` | −160°   | SSE            | Right turn + descent |
+
+Gate normal convention: `normal = [−sin(yaw), cos(yaw), 0]`.
 
 ---
 
@@ -108,8 +118,9 @@ Exact Swift reward (Kaufmann et al. 2023, Extended Data Table 1a):
 r_t = r_prog + r_perc + r_cmd − r_crash
 
 r_prog  = λ₁ [d_{t-1} − d_t]                  λ₁ = 1.0
-r_perc  = λ₂ exp(λ₃ · δ_cam⁴)                 λ₂ = 0.04,  λ₃ = −10.0
-r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²  λ₄ = −2e-4, λ₅ = −1e-4
+r_perc  = λ₂ exp(λ₃ · δ_cam⁴)                 λ₂ = 0.02,  λ₃ = −10.0
+r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²  λ₄ = −2e-4 (body-rate), λ₅ = −1e-4 (jerk)
+         (a_t^ω and Δa_t are scaled to rad/s / N before penalty; see reward.py)
 r_crash = 5.0  if p_z < 0 OR collision         (terminates episode)
 ```
 

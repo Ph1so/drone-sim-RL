@@ -7,7 +7,7 @@ Exact formulation from the paper:
 
     r_prog  = λ₁ [d_{t-1}^Gate − d_t^Gate]           λ₁ = 1.0
     r_perc  = λ₂ exp(λ₃ · δ_cam⁴)                    λ₂ = 0.02, λ₃ = −10.0
-    r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²    λ₄ = −2e-4, λ₅ = −1e-4
+    r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²    λ₄ = −2e-4 (body-rate), λ₅ = −1e-4 (jerk)
     r_crash = 5.0  if p_z < 0 OR collision; else 0   (terminates episode)
 
 Notes
@@ -46,7 +46,21 @@ class RewardComputer:
     LAMBDA_2: float = 0.02    # perception: gate-in-FOV weight
     LAMBDA_3: float = -10.0   # perception: δ_cam^4 shaping exponent
     LAMBDA_4: float = -2e-4   # body-rate: ‖a_t^ω‖² penalty weight
-    LAMBDA_5: float = -1e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight 
+    LAMBDA_5: float = -1e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
+
+    # ── Action scaling for command penalties ──────────────────────────────
+    # In the paper the policy outputs body rates in rad/s and collective
+    # thrust in Newtons.  Here the policy outputs normalised commands
+    # ∈ [−1, +1] which are mapped to motor RPMs via a mixer.  We rescale
+    # body-rate channels to approximate rad/s so that λ₄ and λ₅ have the
+    # same effective magnitude as in the paper.
+    #
+    # Crazyflie CF2X max body rate ≈ 12 rad/s in the flight envelopes used
+    # in the Swift paper (sustained racing turns, not aerobatic limits).
+    # Collective thrust scale ≈ 4 N (approx max total thrust for CF2X at race
+    # weight) → normalised T=1 maps to 4 N.
+    MAX_BODY_RATE_RAD_S:  float = 12.0   # rad/s — maps normalised ±1 to ±12 rad/s
+    MAX_THRUST_N:         float = 4.0    # N     — maps normalised ±1 to ±4 N
 
     # ── Terminal reward ────────────────────────────────────────────────────
     # Paper: subtract r_crash=5.0; implemented as adding CRASH_PENALTY=−5.0.
@@ -113,18 +127,34 @@ class RewardComputer:
         info["r_perc"]    = round(float(r_perc), 6)
 
         # ── 3. Jerk penalty ───────────────────────────────────────────────
-        # r_jerk = λ₄ · ‖a_t − a_{t-1}‖²
+        # r_jerk = λ₅ · ‖a_t − a_{t-1}‖²
+        #
+        # Paper: a_t = [T(N), ṗ, q̇, ṙ (rad/s)] — physical units.
+        # Here:  a_t = [T, R, P, Y] ∈ [−1,+1] normalised.
+        # Rescale to approximate physical magnitudes so the coefficient λ₅
+        # carries the same effective weight as in the paper.
         r_jerk = 0.0
         if self._prev_action is not None:
-            da     = action - self._prev_action
-            r_jerk = self.LAMBDA_4 * float(np.dot(da, da))
+            da_raw  = action - self._prev_action
+            # Scale: thrust channel by MAX_THRUST_N, angular channels by MAX_BODY_RATE_RAD_S
+            scale = np.array([
+                self.MAX_THRUST_N,
+                self.MAX_BODY_RATE_RAD_S,
+                self.MAX_BODY_RATE_RAD_S,
+                self.MAX_BODY_RATE_RAD_S,
+            ], dtype=np.float32)
+            da     = da_raw * scale
+            r_jerk = self.LAMBDA_5 * float(np.dot(da, da))
         self._prev_action = action.copy()
         info["r_jerk"] = round(r_jerk, 6)
 
         # ── 4. Body-rate penalty ──────────────────────────────────────────
-        # r_body_rate = λ₅ · ‖a_t^ω‖²  (roll, pitch, yaw channels)
-        omega_cmd    = action[1:4]
-        r_body_rate  = self.LAMBDA_5 * float(np.dot(omega_cmd, omega_cmd))
+        # r_body_rate = λ₄ · ‖a_t^ω‖²  (roll, pitch, yaw channels)
+        #
+        # Paper: a_t^ω = [ṗ, q̇, ṙ] in rad/s.
+        # Rescale normalised commands to rad/s so λ₄ has correct magnitude.
+        omega_cmd    = action[1:4] * self.MAX_BODY_RATE_RAD_S
+        r_body_rate  = self.LAMBDA_4 * float(np.dot(omega_cmd, omega_cmd))
         info["r_body_rate"] = round(r_body_rate, 6)
 
         # ── 5. Gate passage tracking (info only — no bonus reward) ───────────

@@ -42,6 +42,7 @@ from gym_pybullet_drones.envs.BaseAviary import BaseAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
 
 from .gate_manager import GateManager
+from .residual_dynamics_model import ResidualDynamicsModel
 from .residual_obs_model import ResidualObservationModel
 from .reward import RewardComputer
 
@@ -113,6 +114,7 @@ class DroneRacingEnv(BaseAviary):
         self._gate_manager    = GateManager(num_gates=num_gates, pos_offset=gate_pos_offset, map_name=map_name)
         self._reward_computer = RewardComputer(self._gate_manager)
         self._rom             = ResidualObservationModel(ctrl_freq=ctrl_freq, enabled=obs_noise)
+        self._rdm             = ResidualDynamicsModel(ctrl_freq=ctrl_freq, enabled=obs_noise)
 
         # Per-gate ring buffer of gate-crossing states (Swift paper).
         # Persists across episodes — accumulated during training so that later
@@ -191,7 +193,8 @@ class DroneRacingEnv(BaseAviary):
             self._teleport_to_gate_approach(k)
 
         self._reward_computer.reset()
-        self._rom.reset()
+        self._rom.reset()   # sample new observation-noise GP realization
+        self._rdm.reset()   # sample new dynamics-noise GP realization
         # Rebuild obs from current (possibly teleported) drone state.
         obs = self._computeObs()
         return obs, info
@@ -212,6 +215,11 @@ class DroneRacingEnv(BaseAviary):
             + (1.0 - ACTION_SMOOTHING_ALPHA) * self._last_applied_action
         )
         self._last_applied_action = applied_action.copy()
+
+        # Apply residual dynamics forces/torques (Swift paper: dynamics residual).
+        # Must be called before super().step() so the forces are active during
+        # the first physics sub-step of this control cycle.
+        self._apply_residual_dynamics()
 
         # Pass the smoothed action to BaseAviary → _preprocessAction → RPMs.
         obs, reward, terminated, truncated, info = super().step(applied_action)
@@ -570,6 +578,55 @@ class DroneRacingEnv(BaseAviary):
             if c[2] != drone_id:
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    def _apply_residual_dynamics(self) -> None:
+        """
+        Apply GP-sampled residual forces and torques to the drone body.
+
+        Implements the dynamics residual from Swift (Kaufmann et al. 2023,
+        Methods — "Residual identification").  The paper uses residuals
+        identified from real-world flight data; here we sample from a GP
+        prior with the same RFF architecture as the ROM.
+
+        Forces and torques are expressed in the body frame and applied via
+        PyBullet.  They persist until the next p.stepSimulation() call, so
+        they affect the first physics sub-step of the current control cycle.
+        """
+        if not self._rdm.enabled:
+            return
+
+        state   = self._getDroneStateVector(0)
+        lin_vel = state[10:13].astype(np.float64)
+        ang_vel = state[13:16].astype(np.float64)
+        quat    = state[3:7]
+        rot_mat = np.array(
+            p.getMatrixFromQuaternion(quat, physicsClientId=self.CLIENT)
+        ).reshape(3, 3).astype(np.float64)
+
+        force_body, torque_body = self._rdm.sample(
+            lin_vel = lin_vel,
+            ang_vel = ang_vel,
+            rot_mat = rot_mat,
+        )
+
+        drone_id = self.DRONE_IDS[0]
+        # LINK_FRAME applies force/torque in body coordinates.
+        p.applyExternalForce(
+            drone_id,
+            -1,                          # -1 = base link
+            forceObj   = force_body.tolist(),
+            posObj     = [0.0, 0.0, 0.0],
+            flags      = p.LINK_FRAME,
+            physicsClientId = self.CLIENT,
+        )
+        p.applyExternalTorque(
+            drone_id,
+            -1,
+            torqueObj  = torque_body.tolist(),
+            flags      = p.LINK_FRAME,
+            physicsClientId = self.CLIENT,
+        )
 
     # ------------------------------------------------------------------
     def _compute_gate_corners_body_frame(
