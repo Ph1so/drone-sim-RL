@@ -101,8 +101,8 @@ Status emoji convention: ✅ Complete · 🔄 In progress · ⏳ Pending · ❌ 
 | 1 | 1 | yes | 0.0 | ✅ Complete | ep_len → 1500 | ep_len=1500; erratic flight but stable |
 | 2a | 3 | yes | 0.0 | ✅ Complete | gates_passed = 3/3 | 3/3 gates, reward +31.4 ±0.0; hover exploit broken with gate bonus (+10); jerkiness acceptable without obs noise |
 | 2b | 3 | yes | 0.5 | ⏸ Skipped | — | Exceeded criteria before reaching this phase |
-| 3a | 5 | yes | 0.5→0.8 | 🔄 In progress | gates_passed = 5/5 OR lap completed | 4/5 gates @3.5M steps, reward +47.4; crashes into ground at G5 (z=0.5m descent from G4 z=1.8m); yaw oscillation noted but acceptable without obs noise; explained_variance=0.95, entropy declining to −0.7, KL<0.02 — soft local optimum forming; bumped spawn_prob to 0.8 and ent_coef to 0.05 to escape |
-| 3b | 5 | no | 0.8 | ⏳ Pending | eval reward > +40 | ROM will penalise yaw oscillation via ‖ω‖ → observation drift; expect smoother flight to emerge |
+| 3a | 5 | yes | 0.5→0.8 | ✅ Complete | gates_passed = 5/5 OR lap completed | 5/5 gates; G5 ground crash fixed with lap bonus (+30); moved to 3b |
+| 3b | 5 | no | 0.8 | ❌ Stuck | eval reward > +40 (noisy) | 20M steps; noisy eval 0.6/5 gates; ROM KW feedback loop found: amp_pos reached 16.6 cm at ω=14 rad/s → hover exploit under noise; reduced _POS_KW 0.008→0.002, _VEL_KW 0.010→0.003, halved all base/KV params, _MAX_DRIFT_POS 0.40→0.15; restart from Phase 3a checkpoint |
 
 **Commands for each phase:**
 
@@ -119,8 +119,16 @@ python train.py --num_gates 5 --timesteps 3_000_000 --resume best_model/best_mod
 # Phase 3a (normal — once G5 is being passed)
 python train.py --num_gates 5 --timesteps 15_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.5
 
-# Phase 3b (full paper config)
-python train.py --num_gates 5 --timesteps 20_000_000 --resume best_model/best_model.zip --spawn_mid_course_prob 0.8
+# Phase 3b — Option A: resume from last Phase 3a checkpoint (preferred)
+# Find the last drone_racing_ppo_XXXXXXXX_steps.zip before Phase 3b started
+python train.py --num_gates 5 --timesteps 20_000_000 \
+  --resume checkpoints/drone_racing_ppo_XXXXXXXX_steps.zip \
+  --spawn_mid_course_prob 0.8 --ent_coef 0.01
+
+# Phase 3b — Option B: resume from current best_model if Phase 3a ckpt unavailable
+python train.py --num_gates 5 --timesteps 20_000_000 \
+  --resume best_model/best_model.zip \
+  --spawn_mid_course_prob 0.8 --ent_coef 0.01 --lr 3e-4
 ```
 
 **Always match evaluate.py flags to training config:**

@@ -90,31 +90,40 @@ class ResidualObservationModel:
     # We scale: residual_i(z) = σ_i(state) · f_i(z)
     # so that the effective per-step std matches physical VIO drift budgets:
     #
-    #   Quantity    Hover     10 m/s + 5 rad/s
-    #   ─────────   ──────    ────────────────
-    #   Position    ~1.5 cm   ~9.5 cm
-    #   Velocity    ~2.5 cm/s ~10.6 cm/s
+    #   Quantity    Hover     v=3 m/s + ω=10 rad/s
+    #   ─────────   ──────    ────────────────────
+    #   Position    ~1.5 cm   ~5.3 cm
+    #   Velocity    ~4.0 cm/s ~11.0 cm/s
     #   Attitude    ~0.09°    ~0.35°
     #
     # σ = base + k_v·speed + k_ω·ang_rate  (linear fit to the expected envelope)
-    _POS_BASE:  float = 0.030   # m
-    _POS_KV:    float = 0.012   # m per m/s
-    _POS_KW:    float = 0.008   # m per rad/s
+    #
+    # NOTE: _POS_KW and _VEL_KW are deliberately small.  Early Phase 3b training
+    # revealed a positive-feedback instability: high ω → large _KW drift →
+    # confused gate corners → policy cranks ω further → drift doubles.
+    # The KW contribution is kept ≤ 0.002 m/(rad/s) to prevent this loop.
+    _POS_BASE:  float = 0.015   # m
+    _POS_KV:    float = 0.006   # m per m/s
+    _POS_KW:    float = 0.002   # m per rad/s  (was 0.008 — reduced to break feedback)
 
-    _VEL_BASE:  float = 0.070   # m/s
-    _VEL_KV:    float = 0.018   # (m/s) per m/s
-    _VEL_KW:    float = 0.010   # (m/s) per rad/s
+    _VEL_BASE:  float = 0.040   # m/s
+    _VEL_KV:    float = 0.010   # (m/s) per m/s
+    _VEL_KW:    float = 0.003   # (m/s) per rad/s  (was 0.010 — reduced to break feedback)
 
     _ATT_BASE:  float = 0.004   # rad
     _ATT_KW:    float = 0.002   # rad per rad/s
     _ATT_KT:    float = 0.001   # rad per rad of tilt
 
     # ── Hard clamps ───────────────────────────────────────────────────────────
-    _MAX_DRIFT_POS: float = 0.40   # m
-    _MAX_DRIFT_VEL: float = 2.00   # m/s
-    _MAX_DRIFT_ATT: float = 0.15   # rad  (≈ 8.6°)
+    _MAX_DRIFT_POS: float = 0.15   # m   (was 0.40 — 40 cm was larger than gate ±60 cm)
+    _MAX_DRIFT_VEL: float = 0.50   # m/s (was 2.00)
+    _MAX_DRIFT_ATT: float = 0.15   # rad  (≈ 8.6°, unchanged)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Amplitude check (v=3 m/s, ω=10 rad/s):
+    #   amp_pos = 0.015 + 0.006×3 + 0.002×10 = 0.053 m  (5.3 cm)
+    #   amp_vel = 0.040 + 0.010×3 + 0.003×10 = 0.100 m/s (10 cm/s)
+    #   amp_att = 0.004 + 0.002×10           = 0.024 rad (~1.4°)
 
     def __init__(
         self,
