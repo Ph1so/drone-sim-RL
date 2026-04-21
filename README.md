@@ -118,9 +118,12 @@ Exact Swift reward (Kaufmann et al. 2023, Extended Data Table 1a):
 r_t = r_prog + r_perc + r_cmd − r_crash
 
 r_prog  = λ₁ [d_{t-1} − d_t]                  λ₁ = 1.0
+
 r_perc  = λ₂ exp(λ₃ · δ_cam⁴)                 λ₂ = 0.02,  λ₃ = −10.0
+
 r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²  λ₄ = −2e-4 (body-rate), λ₅ = −1e-4 (jerk)
          (a_t^ω and Δa_t are scaled to rad/s / N before penalty; see reward.py)
+
 r_crash = 5.0  if p_z < 0 OR collision         (terminates episode)
 ```
 
