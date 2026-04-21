@@ -1,218 +1,254 @@
-# Drone Racing RL Environment
+# Drone Racing RL — Architecture Overview
 
-A Python-based Reinforcement Learning environment for autonomous drone racing built on `gym-pybullet-drones`, `Gymnasium`, and `stable-baselines3`.
+Autonomous drone racing environment built on `gym-pybullet-drones` + Gymnasium.
+Policy trained with PPO (stable-baselines3), following the Swift system architecture
+(Kaufmann et al., *Nature* 2023).
 
-## Project Layout
+---
 
-```
-drone-sim/
-├── assets/
-│   └── gate.urdf                ← 1.4 × 1.4 m gate frame (XZ-plane opening)
-├── envs/
-│   ├── __init__.py
-│   ├── gate_manager.py          ← Gate dataclass + GateManager
-│   ├── reward.py                ← RewardComputer
-│   └── drone_racing_env.py      ← DroneRacingEnv(BaseAviary)
-├── train.py                     ← PPO + MultimodalExtractor
-├── evaluate.py                  ← GUI evaluation loop
-└── requirements.txt
-```
-
-## Quick-start
-
-### Installation (macOS Apple Silicon)
-
-pybullet cannot be compiled from source on Apple Silicon / Python 3.12.
-Use a conda environment with the pre-built conda-forge binary instead.
-
-```bash
-# 1. Install Miniforge (skip if conda is already available)
-curl -L https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh -o miniforge.sh
-bash miniforge.sh -b -p ~/miniforge3
-source ~/miniforge3/bin/activate
-
-# 2. Create the env with pybullet from conda-forge
-conda create -n drone-sim python=3.10 -y
-conda activate drone-sim
-conda install -c conda-forge pybullet -y
-
-# 3. Install Python dependencies
-pip install -r requirements.txt
-
-# 4. Install gym-pybullet-drones (not on PyPI; --no-deps prevents recompiling pybullet)
-pip install git+https://github.com/utiasDSL/gym-pybullet-drones.git --no-deps
-
-# 5. Install transitive deps that --no-deps skipped
-pip install transforms3d "scipy<2.0" "control>=0.10.2,<0.11.0" tqdm rich
-```
-
-### Running
-
-Always activate the conda env before running any script:
-
-```bash
-source ~/miniforge3/bin/activate && conda activate drone-sim
-```
-
-```bash
-# Train (headless, 3M steps, 4 parallel workers)
-python train.py --timesteps 3_000_000 --n_envs 4
-
-# Monitor in TensorBoard (separate terminal, same env)
-tensorboard --logdir ./logs
-
-# Evaluate best checkpoint in PyBullet GUI
-python evaluate.py --model ./best_model/best_model.zip --episodes 5
-
-# Visualise the racecourse map (no model needed)
-python visualize.py
-```
-
-## Design Reference
-
-### Action Space
-
-`Box(4,)` normalised `[T, R, P, Y] ∈ [−1, +1]`. `_preprocessAction` maps these through a classical X-config quadrotor mixer centred around `HOVER_RPM`:
+## System Architecture
 
 ```
-M0 (FL, CCW) = hover + 0.5·h·T  −  0.2·h·R  −  0.2·h·P  +  0.1·h·Y
-M1 (FR, CW)  = hover + 0.5·h·T  +  0.2·h·R  −  0.2·h·P  −  0.1·h·Y
-M2 (RL, CW)  = hover + 0.5·h·T  −  0.2·h·R  +  0.2·h·P  −  0.1·h·Y
-M3 (RR, CCW) = hover + 0.5·h·T  +  0.2·h·R  +  0.2·h·P  +  0.1·h·Y
+┌──────────────────────────────────────────────────────────────┐
+│                      DroneRacingEnv                          │
+│                                                              │
+│  ┌─────────────┐  ┌──────────────────┐  ┌────────────────┐  │
+│  │ GateManager │  │ RewardComputer   │  │ Residual Obs   │  │
+│  │             │  │                  │  │ Model (ROM)    │  │
+│  │ Sequential  │  │ Swift reward:    │  │                │  │
+│  │ gate pass   │  │ prog + perc      │  │ 9 GP draws,    │  │
+│  │ detection   │  │ + cmd − crash    │  │ per episode    │  │
+│  └──────┬──────┘  └────────┬─────────┘  └───────┬────────┘  │
+│         │                  │                     │           │
+│         └──────────────────┴─────────────────────┘           │
+│                            ↓                                  │
+│          _computeObs() → 31-D flat observation               │
+│          [ pos(3) | vel(3) | rot(9) | corners(12) | act(4) ] │
+│                            ↓  ↑ action                        │
+└────────────────────────────┼──┘──────────────────────────────┘
+                             │
+              ┌──────────────▼───────────────┐
+              │      PPO Policy (SB3)         │
+              │   MlpPolicy — 2 × 128 units   │
+              │   LeakyReLU(α = 0.2)          │
+              │   Output: [T, R, P, Y] ∈ R⁴   │
+              └──────────────────────────────┘
+                             │
+              ┌──────────────▼───────────────┐
+              │    Action Smoothing (EMA)     │
+              │  applied = α·raw + (1−α)·prev │
+              │  α = 0.7                      │
+              └──────────────┬───────────────┘
+                             │
+              ┌──────────────▼───────────────┐
+              │   X-config quadrotor mixer    │
+              │   → per-motor RPMs (1, 4)     │
+              │   → PyBullet physics engine   │
+              └──────────────────────────────┘
 ```
 
-### Observation Space
+---
 
-Flat `Box(31,)` — matches the exact input used by the Swift policy (Kaufmann et al., 2023).
+## Components
 
-| Slice | Content | Dim |
-|-------|---------|-----|
-| `[0:3]` | Drone position in world frame (m) | 3 |
-| `[3:6]` | Linear velocity in world frame (m/s) | 3 |
-| `[6:15]` | Attitude as **rotation matrix** (row-major, body→world) | 9 |
-| `[15:27]` | 4 gate-corner positions in **drone body frame** (m) | 12 |
-| `[27:31]` | Previous action `[T, R, P, Y]` applied at t−1 | 4 |
+### `envs/drone_racing_env.py` — DroneRacingEnv
 
-Attitude is encoded as a flattened 3×3 rotation matrix (not quaternion) to avoid gimbal-lock discontinuities (Zhou et al., 2019 — cited as ref. [47] in the Swift paper).
+Subclass of `BaseAviary`. Owns the control loop, observation assembly,
+step cache, and mid-course spawn logic.
 
-Gate corners are computed from the current target gate's centre and yaw using a ±0.6 m half-opening in the gate plane, then transformed into drone body frame: `R^T @ (corner_world − pos_drone)`. The four corners are ordered top-right, top-left, bottom-left, bottom-right.
+**Step cache** (`_step_cache`): lazily populated on the first call within a
+step and shared across `_computeObs`, `_computeReward`, `_computeTerminated`,
+and `_computeInfo`. Guarantees a single PyBullet state query per step and that
+`gate_manager.update()` fires exactly once.
 
-> **No raw pixels are passed to the policy.** `_render_ego_camera()` is retained in the env for visualization and future CV pipeline integration.
+**Mid-course spawn** (Swift paper, Methods): at each episode reset, with
+probability `spawn_mid_course_prob`, the drone is teleported to just past a
+random gate. Two spawn paths:
 
-### Gate Passing Logic
+1. *Buffer spawn* (preferred): sample a previously-recorded gate-crossing state
+   from `_gate_buffer`, add bounded noise to pos/vel/attitude/yaw. The buffer
+   accumulates crossing states across episodes, ensuring spawns match real
+   racing distributions (speed, bank angle, body rates).
+2. *Geometric fallback*: used before the buffer fills. Fixed offset past the
+   previous gate's exit plane with a small forward velocity.
 
-Each gate has a **normal vector** `[−sin θ, cos θ, 0]` derived from its `yaw_deg`. A pass is detected when the drone's signed distance to the gate plane transitions `≤ 0 → > 0` while its projected position is within `±0.60 m` (horizontal) × `±0.60 m` (vertical) of the gate centre.
+**Action smoothing**: EMA low-pass filter applied between the raw policy
+output and the physics engine. The jerk penalty is computed on raw outputs
+so the policy is still penalised for demanding jerky commands even though
+the motors never see them.
 
-### Racecourse
+---
 
-Five gates on an oval-ish lap. The drone spawns at `[0, 0, 0.3]` facing `+Y`.
+### `envs/gate_manager.py` — GateManager
 
-| Gate | Position (m)       | Yaw    | Normal direction |
-|------|--------------------|--------|------------------|
-| G1   | `[0.0, 2.5, 1.5]` | 0°     | +Y (north)       |
-| G2   | `[2.5, 5.0, 1.5]` | −40°   | NE diagonal      |
-| G3   | `[5.5, 5.5, 1.5]` | −90°   | +X (east)        |
-| G4   | `[7.5, 2.8, 1.5]` | −135°  | SE diagonal      |
-| G5   | `[5.0, 0.5, 1.5]` | 180°   | −Y (south)       |
+Maintains the ordered gate sequence and detects passage events.
 
-### Reward Components
+**Gate normal convention**: `R_z(yaw_deg) × [0, 1, 0] = [−sin θ, cos θ, 0]`.
+A gate is passed when the drone's signed distance to the gate plane transitions
+`≤ 0 → > 0` while the drone's lateral and vertical projection onto the gate is
+within ±0.60 m of centre.
 
-Exact Swift formulation — Kaufmann et al., *Nature* 2023, Extended Data Table 1a.
+**Racecourse** (5-gate oval, `RACE_GATES`):
+
+| Gate | Position (m)        | Yaw    |
+|------|---------------------|--------|
+| G1   | `[0.0, 2.5, 1.5]`  | 0°     |
+| G2   | `[2.5, 5.0, 1.5]`  | −40°   |
+| G3   | `[5.5, 5.5, 1.5]`  | −90°   |
+| G4   | `[7.5, 2.8, 1.5]`  | −135°  |
+| G5   | `[5.0, 0.5, 1.5]`  | 180°   |
+
+---
+
+### `envs/reward.py` — RewardComputer
+
+Exact Swift reward (Kaufmann et al. 2023, Extended Data Table 1a):
 
 ```
 r_t = r_prog + r_perc + r_cmd − r_crash
 
-r_prog  = λ₁ × [d_{t-1}^Gate − d_t^Gate]                   λ₁ = 1.0
-r_perc  = λ₂ × exp(λ₃ × δ_cam⁴)                            λ₂ = 0.02,  λ₃ = −10.0
-r_cmd   = λ₄ × ‖a_t^ω‖²  +  λ₅ × ‖a_t − a_{t-1}‖²        λ₄ = −2e-4, λ₅ = −1e-4
-r_crash = 5.0  if p_z < 0 OR collision with gate; else 0   (episode terminates)
+r_prog  = λ₁ [d_{t-1} − d_t]                  λ₁ = 1.0
+r_perc  = λ₂ exp(λ₃ · δ_cam⁴)                 λ₂ = 0.04,  λ₃ = −10.0
+r_cmd   = λ₄ ‖a_t^ω‖² + λ₅ ‖a_t − a_{t-1}‖²  λ₄ = −2e-4, λ₅ = −1e-4
+r_crash = 5.0  if p_z < 0 OR collision         (terminates episode)
 ```
 
-| Component | Formula | Weight |
-|---|---|---|
-| Progress | `λ₁ [d_{t-1} − d_t]` — distance delta to next gate | λ₁ = 1.0 |
-| Perception | `λ₂ exp(λ₃ δ_cam⁴)` — δ_cam = angle body-fwd → gate centre | λ₂ = 0.02, λ₃ = −10.0 |
-| Body-rate penalty | `λ₄ ‖a_t^ω‖²` (roll/pitch/yaw action channels) | λ₄ = −2×10⁻⁴ |
-| Jerk penalty | `λ₅ ‖a_t − a_{t-1}‖²` | λ₅ = −1×10⁻⁴ |
-| Crash / Out-of-bounds | `−5.0` + episode ends (p_z < 0 or collision) | — |
+`δ_cam` is the angle between the body-forward axis and the vector to the next
+gate centre. The perception term rewards keeping the gate in the camera's field
+of view without ever referencing image pixels — the same formulation works when
+the gate-corners observation is swapped from ground-truth geometry to a real CV
+pipeline output.
 
-**No gate passage bonus.** Gate transitions reset `_prev_dist` to suppress the distance spike when the target switches to the next (farther) gate.
+Gate-transition reset: `_prev_dist` is set to `None` whenever a gate is passed
+so that the target switching from the just-passed gate (dist ≈ 0) to the next
+gate (dist > 0) does not produce a large negative r_prog spike.
 
-### Training Architecture
+---
 
-Flat `MlpPolicy` matching the Swift paper (Kaufmann et al., 2023, Methods):
+### `envs/residual_obs_model.py` — ResidualObservationModel (ROM)
 
-```
-Input (31-D) → Linear(128) → LeakyReLU(α=0.2) → Linear(128) → LeakyReLU(α=0.2) → policy / value heads
-```
+GP-based perception residual model from Kaufmann et al. 2023 (Methods,
+"Residual observation model"). Injects state-conditioned drift into the
+position, velocity, and attitude observation slots to model VIO degradation
+during high-speed and agile flight.
 
-- **No feature extractor**, no CNN, no LayerNorm — just a 2-layer 128-unit MLP shared backbone
-- **LeakyReLU(α=0.2)** — paper-exact activation; `functools.partial(nn.LeakyReLU, negative_slope=0.2)` used so it is picklable with `SubprocVecEnv`
-- **Policy and value networks** share the backbone (standard SB3 `MlpPolicy`)
+**Architecture**: 9 independent 1-D GPs (one per observation component)
+approximated via Random Fourier Features (RFF). Input features `z ∈ R³`:
 
-PPO hyperparameters:
+| Feature | Symbol | Physical driver |
+|---------|--------|-----------------|
+| Linear speed | `‖v‖` | Motion blur → visual feature tracking loss |
+| Angular rate | `‖ω‖` | Rotational blur → IMU-visual misalignment |
+| Tilt angle | `θ_tilt` | Horizon feature loss at large bank angles |
+
+**Per-episode sampling**: `reset()` draws new weights `w ~ N(0, I)` for each
+GP realization. The weights are held fixed for the entire episode; the drift
+at each step is `f(z_t) = w · φ(z_t)`, scaled by a state-dependent amplitude
+`σ(speed, ang_rate)`. Same state → same drift value within an episode.
+
+**Temporal consistency**: consecutive time steps share similar states →
+similar GP inputs → similar outputs (RBF kernel is smooth). The drift
+evolves at the rate the physical state changes, not at the noise injection rate.
+
+**Propagation through gate corners**: gate corners are recomputed from the
+drifted position and rotation matrix so that VIO attitude error propagates
+consistently into the body-frame gate perception.
+
+Toggle: `DroneRacingEnv(obs_noise=False)` disables the ROM for clean evaluation.
+
+---
+
+### `train.py` — PPO Training
+
+Policy: `MlpPolicy` with `net_arch=[128, 128]` and `activation_fn=LeakyReLU(α=0.2)`.
+Matches the Swift paper architecture exactly (2-layer 128-unit MLP, same activation).
+
+Key PPO hyperparameters:
 
 | Parameter | Value | Note |
 |-----------|-------|------|
-| `n_steps` | 1500 | One rollout = one full episode per worker |
+| `n_steps` | 1500 | One rollout ≈ one full episode per worker |
 | `batch_size` | 256 | |
 | `n_epochs` | 10 | |
-| `gamma` | 0.99 | Matches paper Extended Data Table 1a |
+| `gamma` | 0.99 | |
 | `gae_lambda` | 0.95 | |
-| `clip_range` | 0.2 | ε in paper |
-| `ent_coef` | 0.0 | Not used in Swift |
-| `lr` | 3×10⁻⁴ | Adam; auto-lowered to 5×10⁻⁵ on `--resume` |
+| `clip_range` | 0.2 | |
+| `learning_rate` | 3e-4 | Lowered to 5e-5 on `--resume` |
 
-When resuming (`--resume`), `lr` is automatically lowered to `5e-5` to stabilise the value function under the new reward scale.
+---
 
-### Modular Perception Design
+### `evaluate.py` — Evaluation Loop
 
-The policy never receives raw pixels. Gate corners in body frame are the only perception interface:
+Runs the policy in the PyBullet GUI with `obs_noise=False` (clean ground-truth
+observations). Records per-episode breakdown of all reward components via the
+`info` dict.
+
+---
+
+## Observation Space
+
+Flat `Box(31,)` — identical to the Swift paper input:
+
+| Slice | Content | Why |
+|-------|---------|-----|
+| `[0:3]` | Position, world frame (m) | Localisation |
+| `[3:6]` | Linear velocity, world frame (m/s) | Speed awareness |
+| `[6:15]` | Rotation matrix, body→world, row-major | Attitude without quaternion discontinuities (Zhou et al. 2019) |
+| `[15:27]` | 4 gate-corner positions in drone body frame (m) | Geometry-complete gate representation; swappable with CV output |
+| `[27:31]` | Previous raw policy action at t−1 | Temporal context for smooth control |
+
+When the ROM is enabled, slices `[0:3]`, `[3:6]`, and `[6:15]` carry drifted
+estimates; `[15:27]` is recomputed from those estimates so the gate-corner
+error is physically consistent with the attitude drift.
+
+---
+
+## Sim-to-Real Design
+
+The environment is structured so that the trained policy requires no changes
+at competition time — only the observation source is swapped:
 
 ```
-[Prototype]                              [Competition]
-GateManager (ground truth geometry)      CV pipeline on real sim camera
-  → corner positions in body frame  →      same 12-D gate_corners slice
-             ↓                                         ↓
-             policy ─────────────────────────── same policy weights
+Training                           Deployment
+──────────────────────────────     ──────────────────────────────
+GateManager (ground-truth pos)  →  CV pipeline (gate detection)
+ROM (synthetic GP drift)        →  Real VIO + gate-corner detector
+_compute_gate_corners_body_frame → same 12-D corners from detector
+Policy weights ─────────────────── unchanged
 ```
 
-To deploy on the competition sim:
-1. Build a CV module that detects the next gate from the onboard camera and outputs the 4 corner positions in the drone body frame (12 floats).
-2. Replace the `_compute_gate_corners_body_frame()` call in `_computeObs()` with your CV module's output.
-3. The trained policy requires zero changes.
+The perception reward (`r_perc`) trains the policy to keep the gate in the
+forward FOV, which simultaneously trains a behaviour that helps real gate
+detectors stay on target during agile maneuvers.
 
-### Step Cache
+---
 
-`_get_step_state()` populates `_step_cache` lazily so `_computeObs`, `_computeReward`, `_computeTerminated`, and `_computeInfo` share a single PyBullet state query and `gate_manager.update()` fires exactly once per control step.
+## Quick-start
 
-## CLI Reference
-
-### train.py
-
-```
---timesteps INT   Total environment timesteps               (default: 3_000_000)
---n_envs    INT   Number of parallel environments           (default: cpu_count)
---seed      INT   Random seed                               (default: 42)
---device    STR   auto | cpu | cuda | mps                   (default: auto)
---resume    STR   Path to a .zip checkpoint to resume       (default: none)
---num_gates INT   Active gates for curriculum training 1–5  (default: 5)
-```
-
-Curriculum workflow:
 ```bash
-python train.py --num_gates 1 --timesteps 1_000_000   # master gate 1 first
-python train.py --num_gates 3 --timesteps 2_000_000   # extend to 3 gates
-python train.py --num_gates 5 --timesteps 3_000_000   # full course
+# Create and activate conda environment (pybullet requires Python 3.10 on Apple Silicon)
+conda create -n drone-sim python=3.10 -y
+conda activate drone-sim
+conda install -c conda-forge pybullet -y
+pip install -r requirements.txt
+pip install git+https://github.com/utiasDSL/gym-pybullet-drones.git --no-deps
+pip install transforms3d "scipy<2.0" "control>=0.10.2,<0.11.0" tqdm rich
 ```
 
-### evaluate.py
+```bash
+# Train (headless)
+python train.py --timesteps 3_000_000 --n_envs 4
 
+# Evaluate in GUI
+python evaluate.py --model ./best_model/best_model.zip --episodes 5
+
+# Curriculum (start narrow, expand)
+python train.py --num_gates 1 --timesteps 1_000_000
+python train.py --num_gates 3 --timesteps 2_000_000 --resume best_model/best_model.zip
+python train.py --num_gates 5 --timesteps 3_000_000 --resume best_model/best_model.zip
 ```
---model      STR   Path to saved .zip policy                (default: ./best_model/best_model.zip)
---episodes   INT   Number of evaluation episodes            (default: 5)
---render_fps INT   Rendering pace in fps                    (default: 48)
---num_gates  INT   Active gates (match training config)     (default: 5)
---record         Record PyBullet GUI to video frames
+
+Always activate the conda environment first:
+```bash
+source ~/miniforge3/bin/activate && conda activate drone-sim
 ```
-# drone-sim-RL

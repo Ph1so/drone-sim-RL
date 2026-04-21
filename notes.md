@@ -2,6 +2,85 @@
 
 ---
 
+## 2026-04-20 — Residual Observation Model (GP-based, Swift paper)
+
+### What was added
+
+`envs/residual_obs_model.py` — `ResidualObservationModel` class.
+`DroneRacingEnv` gains `obs_noise: bool = True` parameter.
+`_computeObs()` routes pos/vel/rot through the ROM before assembling the
+observation vector, including recomputing gate corners from drifted pose.
+
+### Why not white Gaussian noise?
+
+White noise gives each step an independent error. The policy sees this easily —
+it is just a mild perturbation, averaged away over a few steps. Real VIO errors
+are **temporally correlated**: once the estimator drifts it stays wrong for
+hundreds of milliseconds. A policy never trained on sustained drift will degrade
+hard under real sensors. Temporally consistent errors are the actual stress test.
+
+### Why GP instead of an OU process?
+
+The first implementation used an Ornstein-Uhlenbeck process: drift evolves as a
+slow random walk regardless of the drone's state. This gets the temporal
+correlation direction right but gets the mechanism wrong.
+
+The paper's model (and physical reality) says: **drift is a function of the
+current state, not of history.** The same flight maneuver at the same speed
+should produce the same VIO error on every lap — because the same visual blur
+and the same inertial integration error appear. The GP encodes this: a single
+function `f: state → residual` is fixed per episode. History doesn't matter;
+state does.
+
+OU gives temporal consistency through slow reversion. The GP gives it through
+trajectory continuity — consecutive steps share similar states, and the RBF
+kernel makes `f` smooth, so nearby states give nearby drift values.
+
+### Why Random Fourier Features?
+
+The paper fits the GP posterior from three real-world rollouts (~50 s of
+VIO-vs-mocap data). We have no real data. RFF (Rahimi & Recht, 2007) lets us
+sample from the GP *prior* with the correct RBF covariance structure at O(D)
+cost per step. The prior gives a flat distribution over drift functions with the
+right length scales — a principled proxy for "unknown but smooth corruption."
+
+### Why 9 independent 1-D GPs?
+
+One per observation component: `[px, py, pz, vx, vy, vz, roll, pitch, yaw]`.
+Real VIO errors have some cross-correlation (e.g., lateral velocity errors couple
+to position errors), but the paper treats each dimension independently and it is
+the tractable approximation. Nine scalars are much cheaper than one 9-D GP.
+
+### Why state-dependent amplitude, not constant σ_f?
+
+The RFF prior has uniform variance across all states. But VIO errors are known to
+be larger at high speed and high angular rate. Multiplying the unit-variance GP
+sample by `σ(speed, ang_rate)` injects this physical prior without touching the
+covariance structure. It is equivalent to a non-stationary kernel where the signal
+variance varies with input location — the simplest version that captures the
+dominant failure mode.
+
+### Why do gate corners use the drifted pos/rot?
+
+Gate corners are expressed in the drone's **body frame**: `R^T (corner_world − pos_drone)`.
+In real deployment `R` and `pos_drone` come from VIO — the drifted estimates. If
+we corrupt pos and rot in the obs but recompute corners from ground truth, the
+observation is physically inconsistent: the drone "thinks" it is 15 cm off but
+"sees" the gate perfectly centred. Using the drifted quantities for the corner
+transform propagates the VIO error through the full observation coherently.
+
+### Magnitude calibration targets
+
+| Quantity    | Hover     | 10 m/s + 5 rad/s |
+|-------------|-----------|------------------|
+| Position    | ~1.5 cm   | ~9.5 cm          |
+| Velocity    | ~2.5 cm/s | ~10.6 cm/s       |
+| Attitude    | ~0.09°    | ~0.35°           |
+
+These match the envelope visible in Extended Data Fig. 1 of the paper.
+
+---
+
 ## 2026-04-20 — Align fully with Swift architecture (Kaufmann et al., Nature 2023)
 
 ### Motivation

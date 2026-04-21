@@ -42,6 +42,7 @@ from gym_pybullet_drones.envs.BaseAviary import BaseAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
 
 from .gate_manager import GateManager
+from .residual_obs_model import ResidualObservationModel
 from .reward import RewardComputer
 
 
@@ -101,14 +102,17 @@ class DroneRacingEnv(BaseAviary):
         num_gates:              int = 5,
         spawn_mid_course_prob:  float = 0.8,
         gate_pos_offset:        Optional[list] = None,
+        map_name:               str = "train",
+        obs_noise:              bool = True,
     ) -> None:
         self._img_h, self._img_w = img_size
         self._spawn_mid_course_prob = spawn_mid_course_prob
 
         # GateManager and RewardComputer are created before super().__init__
         # because BaseAviary.__init__ calls _addObstacles() internally.
-        self._gate_manager   = GateManager(num_gates=num_gates, pos_offset=gate_pos_offset)
+        self._gate_manager    = GateManager(num_gates=num_gates, pos_offset=gate_pos_offset, map_name=map_name)
         self._reward_computer = RewardComputer(self._gate_manager)
+        self._rom             = ResidualObservationModel(ctrl_freq=ctrl_freq, enabled=obs_noise)
 
         # Per-gate ring buffer of gate-crossing states (Swift paper).
         # Persists across episodes — accumulated during training so that later
@@ -187,6 +191,7 @@ class DroneRacingEnv(BaseAviary):
             self._teleport_to_gate_approach(k)
 
         self._reward_computer.reset()
+        self._rom.reset()
         # Rebuild obs from current (possibly teleported) drone state.
         obs = self._computeObs()
         return obs, info
@@ -269,44 +274,55 @@ class DroneRacingEnv(BaseAviary):
     # ------------------------------------------------------------------
     def _computeObs(self) -> np.ndarray:
         """
-        Build 31-D flat observation matching Swift paper (Kaufmann et al. 2023).
+        Build 31-D flat observation matching Swift paper (Kaufmann et al. 2023),
+        with optional state-dependent Ornstein-Uhlenbeck drift injected by the
+        ResidualObservationModel to bridge the sim-to-real gap.
 
         Layout:
-          [0:3]   position world frame
-          [3:6]   linear velocity world frame
-          [6:15]  rotation matrix body→world, row-major (9-D)
-          [15:27] next-gate corners in drone body frame (4 × 3-D)
-          [27:31] previous action
+          [0:3]   position world frame          (drifted when obs_noise=True)
+          [3:6]   linear velocity world frame   (drifted when obs_noise=True)
+          [6:15]  rotation matrix body→world    (attitude error composed in)
+          [15:27] next-gate corners, body frame (recomputed from drifted pos/rot)
+          [27:31] previous action               (always clean)
         """
         cache = self._get_step_state()
         state = cache["state"]
 
-        pos_world = state[0:3].astype(np.float32)           # (3,)
-        lin_vel   = state[10:13].astype(np.float32)         # (3,)
+        # True kinematic quantities (float64 for ROM internal arithmetic)
+        pos_true = state[0:3].astype(np.float64)
+        vel_true = state[10:13].astype(np.float64)
+        ang_vel  = state[13:16].astype(np.float64)
 
-        # Rotation matrix (body→world) from quaternion (x,y,z,w PyBullet format)
         quat    = state[3:7]
-        rot_mat = np.array(
+        rot_true = np.array(
             p.getMatrixFromQuaternion(quat, physicsClientId=self.CLIENT)
-        ).reshape(3, 3).astype(np.float32)
-        rot_flat = rot_mat.flatten()                         # (9,)
+        ).reshape(3, 3).astype(np.float64)
 
-        # Next-gate corners in drone body frame (4 corners × 3-D = 12-D)
+        # Apply state-dependent OU drift (no-op when ROM is disabled)
+        pos_obs, vel_obs, rot_obs = self._rom.apply(
+            pos     = pos_true,
+            vel     = vel_true,
+            rot_mat = rot_true,
+            lin_vel = vel_true,
+            ang_vel = ang_vel,
+        )
+
+        # Gate corners recomputed in the drone's *perceived* body frame so that
+        # the attitude error naturally propagates into the gate observation.
         gate_corners = self._compute_gate_corners_body_frame(
-            pos_world = state[0:3].astype(np.float64),
-            rot_mat   = rot_mat.astype(np.float64),
-        )                                                    # (12,)
+            pos_world = pos_obs,
+            rot_mat   = rot_obs,
+        )                                                    # (12,) float32
 
-        # Previous action (set to zeros at episode start, current action thereafter)
-        prev_action = self._last_action                      # (4,)
+        prev_action = self._last_action                      # (4,) float32
 
         return np.concatenate([
-            pos_world,    # 3
-            lin_vel,      # 3
-            rot_flat,     # 9
-            gate_corners, # 12
-            prev_action,  # 4
-        ]).astype(np.float32)   # total: 31
+            pos_obs.astype(np.float32),    # 3
+            vel_obs.astype(np.float32),    # 3
+            rot_obs.flatten().astype(np.float32),  # 9
+            gate_corners,                  # 12
+            prev_action,                   # 4
+        ])   # total: 31, dtype float32
 
     # ------------------------------------------------------------------
     def _computeReward(self) -> float:

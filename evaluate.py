@@ -367,6 +367,7 @@ def evaluate(args: argparse.Namespace) -> None:
     print(f"\n{'='*60}")
     print(f"  DroneRacing — Policy Evaluation")
     print(f"  Model     : {args.model}")
+    print(f"  Map       : {args.map}")
     print(f"  Episodes  : {args.episodes}")
     print(f"  Render Hz : {args.render_fps} fps")
     print(f"{'='*60}\n")
@@ -399,7 +400,8 @@ def evaluate(args: argparse.Namespace) -> None:
     gate_offset = args.gate_offset if args.gate_offset else None
     env = DroneRacingEnv(gui=True, record=args.record, num_gates=args.num_gates,
                          gate_pos_offset=gate_offset,
-                         spawn_mid_course_prob=args.spawn_mid_course_prob)
+                         spawn_mid_course_prob=args.spawn_mid_course_prob,
+                         map_name=args.map)
 
     _draw_oob_wireframe(env.CLIENT)
 
@@ -582,5 +584,13 @@ if __name__ == "__main__":
         default = False,
         help    = "Save a 3-panel diagnostic figure per episode: XY path, roll/pitch, ang-vel "
                   "(requires matplotlib; saved as eval_traj_ep<N>.png)",
+    )
+    parser.add_argument(
+        "--map",
+        type    = str,
+        default = "train",
+        choices = ["train", "eval"],
+        help    = "Racecourse to use: 'train' (oval, seen during training) or "
+                  "'eval' (asymmetric with altitude variation, unseen; default: %(default)s)",
     )
     evaluate(parser.parse_args())

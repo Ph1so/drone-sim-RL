@@ -32,23 +32,21 @@ HALF_OPEN_H  = GATE_INNER / 2.0   # ± 0.60 m  vertical   in gate plane
 PASS_MARGIN  = 1.10   # scale factor: slightly larger acceptance window
 
 
-# ── Racecourse definition ─────────────────────────────────────────────────────
-#
-#  Oval-ish lap (CCW when viewed from above, z-up world):
-#
-#   Start: (0, 0, 0.3)    ←── drone spawn, facing +Y
-#
-#   G1 ── G2
-#   |       \
-#   G5      G3
-#    \      /
-#     G4───
+# ── Racecourse definitions ────────────────────────────────────────────────────
 #
 #  yaw_deg: angle such that gate_normal = [−sin(yaw), cos(yaw), 0]
 #    yaw=  0° → normal = [0,  1, 0]  (gate faces north / +Y)
 #    yaw=-45° → normal = [0.71, 0.71, 0]  (NE diagonal)
 #    yaw=-90° → normal = [1,  0, 0]  (gate faces east / +X)
 #    yaw=180° → normal = [0, -1, 0]  (gate faces south / −Y)
+#
+#  ── "train" map — oval CCW (drone spawns at origin facing +Y) ───────────────
+#
+#   G1 ── G2
+#   |       \
+#   G5      G3
+#    \      /
+#     G4───
 #
 _GATE_DEFS = [
     #  pos (x, y, z-center)     yaw_deg   label
@@ -57,6 +55,29 @@ _GATE_DEFS = [
     ([ 5.5,  5.5,  1.50],  -90.0,  "G3"),
     ([ 7.5,  2.8,  1.50], -135.0,  "G4"),
     ([ 5.0,  0.5,  1.50],  180.0,  "G5"),
+]
+
+#  ── "eval" map — asymmetric with altitude variation (unseen during training) ─
+#
+#  Different shape (not an oval), height changes across gates, and uses a wider
+#  portion of the world space.  The circuit is still CCW when viewed from above.
+#
+#   Sequence: E1(N) → E2(NE hi→lo) → E3(E high) → E4(S) → E5(SW lo) → E1
+#
+#   Gate directions (normal vectors, i.e. exit direction):
+#     E1  yaw=  0° → [  0,    1,  0]  north
+#     E2  yaw=-55° → [  0.82, 0.57, 0]  NE
+#     E3  yaw=-100° → [ 0.98,-0.17, 0]  nearly east, slight south
+#     E4  yaw=175° → [-0.09,-1.00, 0]  nearly south
+#     E5  yaw=115° → [-0.91,-0.42, 0]  SW
+#
+_EVAL_GATE_DEFS = [
+    #  pos (x, y, z-center)     yaw_deg   label
+    ([ 0.5,  3.0,  1.80],    0.0,  "E1"),
+    ([ 4.0,  7.0,  1.20],  -55.0,  "E2"),
+    ([ 9.0,  6.0,  2.00], -100.0,  "E3"),
+    ([ 9.5,  2.0,  1.50],  175.0,  "E4"),
+    ([ 4.0, -0.5,  1.20],  115.0,  "E5"),
 ]
 
 
@@ -133,12 +154,23 @@ class Gate:
         self.body_id           = -1
 
 
-# ── Pre-built gate list (deep-copied per episode) ─────────────────────────────
+# ── Pre-built gate lists (deep-copied per episode) ────────────────────────────
 
 RACE_GATES: List[Gate] = [
     Gate(position=d[0], yaw_deg=d[1], label=d[2])
     for d in _GATE_DEFS
 ]
+
+EVAL_RACE_GATES: List[Gate] = [
+    Gate(position=d[0], yaw_deg=d[1], label=d[2])
+    for d in _EVAL_GATE_DEFS
+]
+
+# Registry — add new maps here.
+MAPS: dict[str, List[Gate]] = {
+    "train": RACE_GATES,
+    "eval":  EVAL_RACE_GATES,
+}
 
 
 # ── GateManager ───────────────────────────────────────────────────────────────
@@ -162,8 +194,17 @@ class GateManager:
         dist   = gm.dist_to_next(pos)
     """
 
-    def __init__(self, num_gates: int = 5, pos_offset: Optional[np.ndarray] = None) -> None:
-        self._n_gates   = min(max(num_gates, 1), len(RACE_GATES))
+    def __init__(
+        self,
+        num_gates: int = 5,
+        pos_offset: Optional[np.ndarray] = None,
+        map_name: str = "train",
+    ) -> None:
+        if map_name not in MAPS:
+            raise ValueError(f"Unknown map '{map_name}'. Available: {list(MAPS)}")
+        self._source_gates = MAPS[map_name]
+        self._map_name   = map_name
+        self._n_gates    = min(max(num_gates, 1), len(self._source_gates))
         self._pos_offset = np.asarray(pos_offset, dtype=np.float64) if pos_offset is not None else None
         self._idx:  int  = 0
         self.num_passed:    int  = 0
@@ -234,7 +275,7 @@ class GateManager:
     # ------------------------------------------------------------------
     def reset(self) -> None:
         """Reset all gates and counters for a new episode."""
-        self.gates = [copy.deepcopy(g) for g in RACE_GATES[:self._n_gates]]
+        self.gates = [copy.deepcopy(g) for g in self._source_gates[:self._n_gates]]
         if self._pos_offset is not None:
             for gate in self.gates:
                 gate.position = gate.position + self._pos_offset
