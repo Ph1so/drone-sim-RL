@@ -72,6 +72,13 @@ class RewardComputer:
     # +10 chosen so: pass bonus (+10) + approach net (+3) ≈ +13 > +6.5 hover.
     GATE_PASSAGE_BONUS: float = 10.0
 
+    # ── Lap completion bonus ──────────────────────────────────────────────────
+    # Incentivises surviving G5 and returning to G1 rather than crashing after
+    # the last gate.  Without this, crashing after G5 earns +50 gates − 5 crash
+    # ≈ +55 which is locally optimal — there is no reward gradient toward the
+    # return leg.  +30 makes a clean lap worth ≈ +80+ vs ≈ +55 for crash-at-G5.
+    LAP_COMPLETION_BONUS: float = 30.0
+
     # ── Terminal reward ────────────────────────────────────────────────────
     # Paper: subtract r_crash=5.0; implemented as adding CRASH_PENALTY=−5.0.
     CRASH_PENALTY: float = -5.0
@@ -174,6 +181,8 @@ class RewardComputer:
             info["gate_passed"] = True
             info["r_gate_bonus"] = r_gate_bonus
             if self._gm.lap_complete:
+                r_gate_bonus += self.LAP_COMPLETION_BONUS
+                info["r_gate_bonus"] = r_gate_bonus
                 info["lap_complete"] = True
 
         # ── 6. Crash penalty ──────────────────────────────────────────────

@@ -98,11 +98,11 @@ Status emoji convention: ✅ Complete · 🔄 In progress · ⏳ Pending · ❌ 
 
 | Phase | Gates | `--no-obs-noise` | `spawn_prob` | Status | Move on when | Notes |
 |---|---|---|---|---|---|---|
-| 1 | 1 | yes | 0.0 | ✅ Complete | ep_len → 1500 | Achieved ep_len=1500; erratic but stable |
-| 2a | 3 | yes | 0.0 | 🔄 In progress | ep_len > 1200 **and** eval gates_passed ≥ 1 | Hover exploit discovered (+6.5 hovering G1); gate passage bonus (+10) added to reward to break it |
-| 2b | 3 | yes | 0.5 | ⏳ Pending | eval gates_passed ≥ 2 consistently | — |
-| 3a | 5 | yes | 0.5 | ⏳ Pending | ep_len > 1200 on full course | — |
-| 3b | 5 | no | 0.8 | ⏳ Pending | eval reward > +10 | — |
+| 1 | 1 | yes | 0.0 | ✅ Complete | ep_len → 1500 | ep_len=1500; erratic flight but stable |
+| 2a | 3 | yes | 0.0 | ✅ Complete | gates_passed = 3/3 | 3/3 gates, reward +31.4 ±0.0; hover exploit broken with gate bonus (+10); jerkiness acceptable without obs noise |
+| 2b | 3 | yes | 0.5 | ⏸ Skipped | — | Exceeded criteria before reaching this phase |
+| 3a | 5 | yes | 0.5→0.8 | 🔄 In progress | gates_passed = 5/5 OR lap completed | 4/5 gates @3.5M steps, reward +47.4; crashes into ground at G5 (z=0.5m descent from G4 z=1.8m); yaw oscillation noted but acceptable without obs noise; explained_variance=0.95, entropy declining to −0.7, KL<0.02 — soft local optimum forming; bumped spawn_prob to 0.8 and ent_coef to 0.05 to escape |
+| 3b | 5 | no | 0.8 | ⏳ Pending | eval reward > +40 | ROM will penalise yaw oscillation via ‖ω‖ → observation drift; expect smoother flight to emerge |
 
 **Commands for each phase:**
 
@@ -110,13 +110,13 @@ Status emoji convention: ✅ Complete · 🔄 In progress · ⏳ Pending · ❌ 
 # Phase 1 (complete)
 python train.py --num_gates 1 --timesteps 5_000_000 --no-obs-noise --spawn_mid_course_prob 0.0
 
-# Phase 2a (current)
+# Phase 2a (complete)
 python train.py --num_gates 3 --timesteps 10_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.0
 
-# Phase 2b
-python train.py --num_gates 3 --timesteps 10_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.5
+# Phase 3a (current — local optimum escape attempt)
+python train.py --num_gates 5 --timesteps 3_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.8 --ent_coef 0.05
 
-# Phase 3a
+# Phase 3a (normal — once G5 is being passed)
 python train.py --num_gates 5 --timesteps 15_000_000 --resume best_model/best_model.zip --no-obs-noise --spawn_mid_course_prob 0.5
 
 # Phase 3b (full paper config)
