@@ -3,10 +3,10 @@ visualize.py — Racecourse map viewer.
 
 Modes
 -----
-  python visualize.py                # matplotlib: top-down + 3D chart
-  python visualize.py --pybullet     # opens PyBullet GUI with labelled gates
-                                     # and a drawn flight path (requires
-                                     # gym-pybullet-drones to be installed)
+  python visualize.py                      # matplotlib: top-down + 3D chart
+  python visualize.py --map eval           # same, but for the eval course
+  python visualize.py --pybullet           # opens PyBullet GUI (train map)
+  python visualize.py --pybullet --map eval  # opens PyBullet GUI (eval map)
 
 matplotlib is the only extra dependency for the default mode.
 """
@@ -21,7 +21,7 @@ import numpy as np
 
 # ── Gate data (imported so it stays in sync with the actual env) ──────────────
 sys.path.insert(0, ".")
-from envs.gate_manager import RACE_GATES, HALF_OPEN_W, HALF_OPEN_H
+from envs.gate_manager import MAPS, HALF_OPEN_W, HALF_OPEN_H
 
 
 # ── Shared geometry helpers ───────────────────────────────────────────────────
@@ -42,10 +42,8 @@ def gate_corners_3d(gate) -> np.ndarray:
 # matplotlib visualisation
 # ══════════════════════════════════════════════════════════════════════════════
 
-def show_matplotlib() -> None:
+def show_matplotlib(gates: list, map_name: str) -> None:
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    from matplotlib.patches import FancyArrowPatch
     from mpl_toolkits.mplot3d import Axes3D          # noqa: F401
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
@@ -57,7 +55,8 @@ def show_matplotlib() -> None:
     NORM_COLOR  = "#E53935"
 
     fig = plt.figure(figsize=(14, 6), facecolor="#1a1a2e")
-    fig.suptitle("Drone Racing — Course Map", color="white", fontsize=14, y=0.97)
+    fig.suptitle(f"Drone Racing — Course Map  [{map_name}]",
+                 color="white", fontsize=14, y=0.97)
 
     # ── Left: top-down (XY) ───────────────────────────────────────────────
     ax2d = fig.add_subplot(1, 2, 1, facecolor="#16213e")
@@ -72,8 +71,8 @@ def show_matplotlib() -> None:
     ax2d.set_aspect("equal")
     ax2d.grid(True, color="#2a2a4a", linewidth=0.5)
 
-    # Flight path: start → G1 → … → G5
-    path_pts = [START[:2]] + [g.position[:2] for g in RACE_GATES]
+    # Flight path: start → G1 → … → GN → G1 (closed loop)
+    path_pts = [START[:2]] + [g.position[:2] for g in gates] + [gates[0].position[:2]]
     xs, ys   = zip(*path_pts)
     ax2d.plot(xs, ys, "--", color=PATH_COLOR, linewidth=1.2,
               alpha=0.6, zorder=1, label="Flight path")
@@ -85,7 +84,7 @@ def show_matplotlib() -> None:
                   xytext=(6, 4), color=START_COLOR, fontsize=8)
 
     # Gates
-    for i, gate in enumerate(RACE_GATES):
+    for gate in gates:
         cx, cy = gate.position[:2]
         right  = gate.right[:2]
         normal = gate.normal[:2]
@@ -120,8 +119,8 @@ def show_matplotlib() -> None:
           WORLD_BOUNDS[4], WORLD_BOUNDS[1]]
     ax2d.plot(bx, by, ":", color="#555", linewidth=0.8, label="World bounds")
 
-    legend = ax2d.legend(facecolor="#1a1a2e", edgecolor="#444",
-                         labelcolor="white", fontsize=8, loc="lower right")
+    ax2d.legend(facecolor="#1a1a2e", edgecolor="#444",
+                labelcolor="white", fontsize=8, loc="lower right")
 
     # ── Right: 3D perspective ─────────────────────────────────────────────
     ax3d = fig.add_subplot(1, 2, 2, projection="3d", facecolor="#16213e")
@@ -136,16 +135,25 @@ def show_matplotlib() -> None:
     for axis in [ax3d.xaxis, ax3d.yaxis, ax3d.zaxis]:
         axis.pane.set_edgecolor("#2a2a4a")
 
-    # Ground plane grid (z=0)
-    gx = np.linspace(-1, 10, 6)
-    gy = np.linspace(-1, 9,  6)
+    # Axis limits derived from gate positions
+    all_pos = np.array([g.position for g in gates])
+    pad_xy, pad_z = 1.5, 0.5
+    x_lo = min(all_pos[:, 0].min() - pad_xy, START[0] - pad_xy)
+    x_hi = all_pos[:, 0].max() + pad_xy
+    y_lo = min(all_pos[:, 1].min() - pad_xy, START[1] - pad_xy)
+    y_hi = all_pos[:, 1].max() + pad_xy
+    z_hi = all_pos[:, 2].max() + pad_z + HALF_OPEN_H
+
+    # Ground plane grid
+    gx = np.linspace(x_lo, x_hi, 6)
+    gy = np.linspace(y_lo, y_hi, 6)
     for xv in gx:
         ax3d.plot([xv, xv], [gy[0], gy[-1]], [0, 0], color="#2a2a4a", lw=0.5)
     for yv in gy:
         ax3d.plot([gx[0], gx[-1]], [yv, yv], [0, 0], color="#2a2a4a", lw=0.5)
 
-    # Flight path
-    path_3d = np.array([START] + [g.position for g in RACE_GATES])
+    # Flight path (closed loop)
+    path_3d = np.array([START] + [g.position for g in gates] + [gates[0].position])
     ax3d.plot(path_3d[:, 0], path_3d[:, 1], path_3d[:, 2],
               "--", color=PATH_COLOR, linewidth=1.2, alpha=0.7)
 
@@ -153,7 +161,7 @@ def show_matplotlib() -> None:
     ax3d.scatter(*START, s=80, color=START_COLOR, marker="^", zorder=5)
 
     # Gate frames as filled quads
-    for gate in RACE_GATES:
+    for gate in gates:
         corners = gate_corners_3d(gate)
         poly = Poly3DCollection(
             [corners],
@@ -161,19 +169,17 @@ def show_matplotlib() -> None:
         )
         ax3d.add_collection3d(poly)
 
-        # Gate label above the gate
         lx, ly, lz = gate.position
         ax3d.text(lx, ly, lz + HALF_OPEN_H + 0.25, gate.label,
                   color="white", fontsize=8, fontweight="bold", ha="center")
 
-        # Normal arrow
         n = gate.normal * 0.8
         ax3d.quiver(lx, ly, lz, n[0], n[1], n[2],
                     color=NORM_COLOR, linewidth=1.2, arrow_length_ratio=0.3)
 
-    ax3d.set_xlim(-1, 10)
-    ax3d.set_ylim(-1, 9)
-    ax3d.set_zlim(0, 4)
+    ax3d.set_xlim(x_lo, x_hi)
+    ax3d.set_ylim(y_lo, y_hi)
+    ax3d.set_zlim(0, z_hi)
     ax3d.view_init(elev=28, azim=-55)
 
     plt.tight_layout()
@@ -184,49 +190,51 @@ def show_matplotlib() -> None:
 # PyBullet live visualisation
 # ══════════════════════════════════════════════════════════════════════════════
 
-def show_pybullet() -> None:
+def show_pybullet(gates: list, map_name: str) -> None:
     import time
     from envs.drone_racing_env import DroneRacingEnv
     import pybullet as p
 
-    print("Opening PyBullet GUI…  Press Ctrl-C to quit.")
-    env = DroneRacingEnv(gui=True)
+    print(f"Opening PyBullet GUI  [{map_name}]…  Press Ctrl-C to quit.")
+    env = DroneRacingEnv(gui=True, map_name=map_name)
     env.reset()
     client = env.CLIENT
 
     # ── Camera: bird's-eye with slight angle ─────────────────────────────
+    all_pos  = np.array([g.position for g in gates])
+    cam_target = (all_pos.max(axis=0) + all_pos.min(axis=0)) / 2
     p.resetDebugVisualizerCamera(
-        cameraDistance       = 10.0,
+        cameraDistance       = 12.0,
         cameraYaw            = 30,
         cameraPitch          = -50,
-        cameraTargetPosition = [4.0, 3.0, 1.0],
+        cameraTargetPosition = cam_target.tolist(),
         physicsClientId      = client,
     )
 
     # ── Draw flight path (coloured segments between gates) ───────────────
-    START    = [0.0, 0.0, 0.30]
-    waypoints = [START] + [g.position.tolist() for g in RACE_GATES]
-    colours  = [
+    START     = [0.0, 0.0, 0.30]
+    waypoints = [START] + [g.position.tolist() for g in gates] + [gates[0].position.tolist()]
+    colours   = [
         [0.27, 0.53, 0.90],   # blue
         [0.27, 0.90, 0.53],   # green
         [0.90, 0.80, 0.27],   # yellow
         [0.90, 0.53, 0.27],   # orange
         [0.90, 0.27, 0.53],   # pink
+        [0.60, 0.27, 0.90],   # purple (loop-back)
     ]
     for i in range(len(waypoints) - 1):
         p.addUserDebugLine(
-            lineFromXYZ   = waypoints[i],
-            lineToXYZ     = waypoints[i + 1],
-            lineColorRGB  = colours[i % len(colours)],
-            lineWidth     = 2.0,
+            lineFromXYZ    = waypoints[i],
+            lineToXYZ      = waypoints[i + 1],
+            lineColorRGB   = colours[i % len(colours)],
+            lineWidth      = 2.0,
             physicsClientId = client,
         )
 
     # ── Gate labels and normal arrows ────────────────────────────────────
-    for gate in RACE_GATES:
+    for gate in gates:
         pos = gate.position.tolist()
 
-        # Gate label
         p.addUserDebugText(
             text            = gate.label,
             textPosition    = [pos[0], pos[1], pos[2] + HALF_OPEN_H + 0.35],
@@ -235,7 +243,6 @@ def show_pybullet() -> None:
             physicsClientId = client,
         )
 
-        # Normal arrow (exit direction)
         tip = [
             pos[0] + gate.normal[0] * 1.0,
             pos[1] + gate.normal[1] * 1.0,
@@ -262,7 +269,7 @@ def show_pybullet() -> None:
     try:
         while True:
             p.stepSimulation(physicsClientId=client)
-            time.sleep(1 / 60)
+            import time as _t; _t.sleep(1 / 60)
     except KeyboardInterrupt:
         pass
     finally:
@@ -282,9 +289,18 @@ if __name__ == "__main__":
         default = False,
         help    = "Open the PyBullet GUI instead of a matplotlib chart",
     )
+    parser.add_argument(
+        "--map",
+        type    = str,
+        default = "train",
+        choices = list(MAPS),
+        help    = "Which course to visualise: train | eval  (default: %(default)s)",
+    )
     args = parser.parse_args()
 
+    gates = MAPS[args.map]
+
     if args.pybullet:
-        show_pybullet()
+        show_pybullet(gates, args.map)
     else:
-        show_matplotlib()
+        show_matplotlib(gates, args.map)

@@ -588,9 +588,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--map",
         type    = str,
-        default = "train",
+        default = "eval",
         choices = ["train", "eval"],
-        help    = "Racecourse to use: 'train' (oval, seen during training) or "
-                  "'eval' (asymmetric with altitude variation, unseen; default: %(default)s)",
+        help    = "Racecourse to use: 'eval' (unseen hook-shape, default) or "
+                  "'train' (S-curve seen during training; default: %(default)s)",
     )
     evaluate(parser.parse_args())

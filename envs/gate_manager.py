@@ -40,44 +40,67 @@ PASS_MARGIN  = 1.10   # scale factor: slightly larger acceptance window
 #    yaw=-90° → normal = [1,  0, 0]  (gate faces east / +X)
 #    yaw=180° → normal = [0, -1, 0]  (gate faces south / −Y)
 #
-#  ── "train" map — oval CCW (drone spawns at origin facing +Y) ───────────────
+#  ── "train" map — S-curve with mixed turns and altitude variation ─────────────
 #
-#   G1 ── G2
-#   |       \
-#   G5      G3
-#    \      /
-#     G4───
+#  Gate exit normals: normal = [-sin(yaw), cos(yaw), 0]
+#  Turn sequence (viewed from above): RIGHT, LEFT, RIGHT, RIGHT, LEFT
+#  Altitude pattern: 1.5 → 2.0 → 1.2 → 1.8 → 1.5  (climb, dive, climb, descent)
+#
+#  Approximate layout:
+#
+#       G3(NW)
+#      /       \
+#   G2(ENE)   G4(ESE)
+#    /             \
+#  G1(N)          G5(SSE)
+#   ^                |
+#   └── (sweep) ─────┘
+#
+#  Drone spawns at (0,0,0.3) facing +Y and first approaches G1 straight ahead.
+#  G2: right turn (N→ENE) + climb to 2.0 m
+#  G3: left  turn (ENE→NNW) + dive to 1.2 m   ← tight segment, short distance
+#  G4: right turn (NNW→ESE) + climb to 1.8 m
+#  G5: right turn (ESE→SSE) + descent to 1.5 m
+#  G1: left  turn (SSE→N)   long sweeping return
 #
 _GATE_DEFS = [
     #  pos (x, y, z-center)     yaw_deg   label
-    ([ 0.0,  2.5,  1.50],    0.0,  "G1"),
-    ([ 2.5,  5.0,  1.50],  -40.0,  "G2"),
-    ([ 5.5,  5.5,  1.50],  -90.0,  "G3"),
-    ([ 7.5,  2.8,  1.50], -135.0,  "G4"),
-    ([ 5.0,  0.5,  1.50],  180.0,  "G5"),
+    ([ 0.0,  4.0,  1.50],    0.0,  "G1"),   # N exit   — straight from spawn
+    ([ 6.0,  6.0,  2.00],  -75.0,  "G2"),   # ENE exit — RIGHT + climb
+    ([ 2.5,  8.5,  1.20],   50.0,  "G3"),   # NNW exit — LEFT  + dive
+    ([ 8.5,  7.0,  1.80], -110.0,  "G4"),   # ESE exit — RIGHT + climb
+    ([ 8.0,  1.5,  1.50], -160.0,  "G5"),   # SSE exit — RIGHT + descent
 ]
 
-#  ── "eval" map — asymmetric with altitude variation (unseen during training) ─
+#  ── "eval" map — hook shape with mirrored turn sequence ───────────────────────
 #
-#  Different shape (not an oval), height changes across gates, and uses a wider
-#  portion of the world space.  The circuit is still CCW when viewed from above.
+#  Turn sequence (viewed from above): LEFT, RIGHT, RIGHT, RIGHT, LEFT
+#  Altitude pattern: 1.5 → 2.0 → 1.2 → 2.0 → 1.5  (same range, different profile)
 #
-#   Sequence: E1(N) → E2(NE hi→lo) → E3(E high) → E4(S) → E5(SW lo) → E1
+#  Approximate layout (uses left/negative-x side of space, distinct from train):
 #
-#   Gate directions (normal vectors, i.e. exit direction):
-#     E1  yaw=  0° → [  0,    1,  0]  north
-#     E2  yaw=-55° → [  0.82, 0.57, 0]  NE
-#     E3  yaw=-100° → [ 0.98,-0.17, 0]  nearly east, slight south
-#     E4  yaw=175° → [-0.09,-1.00, 0]  nearly south
-#     E5  yaw=115° → [-0.91,-0.42, 0]  SW
+#   E3(NNE)────E4(E)
+#  /                 \
+#  E2(NNW)          E5(S)
+#  |                   |
+#  E1(N)    (sweep) ───┘
+#   ^
+#   └── spawn
+#
+#  E1: straight ahead from spawn, same as training first gate style
+#  E2: left  turn (N→NNW)  + climb — drone goes into negative-x territory
+#  E3: right turn (NNW→NNE)+ dive  — hooks back across the course
+#  E4: right turn (NNE→E)  + climb — sweeps across to the east
+#  E5: right turn (E→S)    + descent
+#  E1: left  turn (S→N)    long sweeping return from east side
 #
 _EVAL_GATE_DEFS = [
     #  pos (x, y, z-center)     yaw_deg   label
-    ([ 0.5,  3.0,  1.80],    0.0,  "E1"),
-    ([ 4.0,  7.0,  1.20],  -55.0,  "E2"),
-    ([ 9.0,  6.0,  2.00], -100.0,  "E3"),
-    ([ 9.5,  2.0,  1.50],  175.0,  "E4"),
-    ([ 4.0, -0.5,  1.20],  115.0,  "E5"),
+    ([ 0.5,  3.5,  1.50],    0.0,  "E1"),   # N exit   — straight from spawn
+    ([-1.5,  7.5,  2.00],   40.0,  "E2"),   # NNW exit — LEFT  + climb
+    ([ 4.5,  9.0,  1.20],  -65.0,  "E3"),   # NNE exit — RIGHT + dive
+    ([ 9.5,  6.5,  2.00], -105.0,  "E4"),   # E exit   — RIGHT + climb
+    ([ 8.0,  1.0,  1.50], -170.0,  "E5"),   # S exit   — RIGHT + descent
 ]
 
 
