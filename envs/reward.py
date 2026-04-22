@@ -45,7 +45,7 @@ class RewardComputer:
     LAMBDA_1: float = 1.0     # progress: distance-delta weight
     LAMBDA_2: float = 0.02    # perception: gate-in-FOV weight
     LAMBDA_3: float = -10.0   # perception: δ_cam^4 shaping exponent
-    LAMBDA_4: float = -5e-4   # body-rate: ‖a_t^ω‖² penalty weight
+    LAMBDA_4: float = -1e-3   # body-rate: ‖a_t^ω‖² penalty weight
     LAMBDA_5: float = -1e-4   # jerk: ‖a_t − a_{t-1}‖² penalty weight
 
     # ── Action scaling for command penalties ──────────────────────────────
