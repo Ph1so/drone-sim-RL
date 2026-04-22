@@ -205,7 +205,7 @@ Flat `Box(34,)` — Swift paper base + angular velocity extension:
 
 | Slice | Content | Why |
 |-------|---------|-----|
-| `[0:3]` | Position, world frame (m) | Localisation |
+| `[0:3]` | Position relative to current gate centre, world frame (m) | Gate-relative — generalizes across maps; no track memorization |
 | `[3:6]` | Linear velocity, world frame (m/s) | Speed awareness |
 | `[6:15]` | Rotation matrix, body→world, row-major | Attitude without quaternion discontinuities (Zhou et al. 2019) |
 | `[15:27]` | 4 gate-corner positions in drone body frame (m) | Geometry-complete gate representation; swappable with CV output |
@@ -213,8 +213,10 @@ Flat `Box(34,)` — Swift paper base + angular velocity extension:
 | `[31:34]` | Angular velocity, body frame (rad/s) | Derivative feedback for oscillation damping; always clean (IMU, not VIO-drifted) |
 
 When the ROM is enabled, slices `[0:3]`, `[3:6]`, and `[6:15]` carry drifted
-estimates; `[15:27]` is recomputed from those estimates so the gate-corner
-error is physically consistent with the attitude drift.
+estimates; the gate-relative position in `[0:3]` uses the drifted VIO position
+minus the known gate centre so the position error is physically consistent.
+`[15:27]` is recomputed from those estimates so the gate-corner error is
+physically consistent with the attitude drift.
 
 ---
 

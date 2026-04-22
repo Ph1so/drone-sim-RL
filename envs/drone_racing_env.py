@@ -11,7 +11,7 @@ Mapped to per-motor RPMs via a classical quadrotor mixer.
 Observation space  (Swift paper + angular velocity extension)
 -----------------
 Box(34,)  — flat float32 vector:
-  [0:3]   position in world frame (m)
+  [0:3]   position relative to current gate centre, world frame (m)
   [3:6]   linear velocity in world frame (m/s)
   [6:15]  attitude as rotation matrix (body→world), flattened row-major (9-D)
            Avoids quaternion discontinuities (Zhou et al., 2019).
@@ -288,7 +288,7 @@ class DroneRacingEnv(BaseAviary):
         Build 34-D flat observation (Swift paper base + angular velocity).
 
         Layout:
-          [0:3]   position world frame          (drifted when obs_noise=True)
+          [0:3]   position relative to current gate centre  (drifted when obs_noise=True)
           [3:6]   linear velocity world frame   (drifted when obs_noise=True)
           [6:15]  rotation matrix body→world    (attitude error composed in)
           [15:27] next-gate corners, body frame (recomputed from drifted pos/rot)
@@ -326,13 +326,21 @@ class DroneRacingEnv(BaseAviary):
 
         prev_action = self._last_action                      # (4,) float32
 
+        # Gate-relative position: drone position minus current gate centre.
+        # Subtracting the known gate position from the (possibly drifted) VIO
+        # estimate keeps the representation generalizable across maps — the
+        # network sees "I am X metres from this gate" rather than absolute
+        # world coordinates that vary per track layout.
+        gate_pos = self._gate_manager.current_gate.position          # (3,) float64
+        pos_rel  = (pos_obs - gate_pos).astype(np.float32)           # (3,) float32
+
         return np.concatenate([
-            pos_obs.astype(np.float32),            # 3
-            vel_obs.astype(np.float32),            # 3
-            rot_obs.flatten().astype(np.float32),  # 9
-            gate_corners,                          # 12
-            prev_action,                           # 4
-            ang_vel.astype(np.float32),            # 3  — clean IMU rates for damping feedback
+            pos_rel,                                   # 3  — gate-relative (was world-frame)
+            vel_obs.astype(np.float32),                # 3
+            rot_obs.flatten().astype(np.float32),      # 9
+            gate_corners,                              # 12
+            prev_action,                               # 4
+            ang_vel.astype(np.float32),                # 3  — clean IMU rates for damping feedback
         ])   # total: 34, dtype float32
 
     # ------------------------------------------------------------------
