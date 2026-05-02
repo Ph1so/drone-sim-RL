@@ -231,13 +231,20 @@ def _save_traj_plot(
 
     # ── Panel 1: Bird's-eye XY ──────────────────────────────────────────
     ax = axes[0]
-    for seg in range(num_gates + 1):
-        mask = g_idx == seg
-        if not np.any(mask):
-            continue
+    # Split into contiguous runs so non-consecutive segments with the same
+    # gate_idx (e.g. gate_idx wraps back to 0 after passing the last gate)
+    # are not connected by a spurious straight line.
+    seg_changes = np.where(np.diff(g_idx) != 0)[0] + 1
+    run_starts  = np.concatenate([[0], seg_changes])
+    run_ends    = np.concatenate([seg_changes, [len(g_idx)]])
+    plotted_labels: set[str] = set()
+    for start, end in zip(run_starts, run_ends):
+        seg   = int(g_idx[start])
         color = seg_colors[seg % len(seg_colors)]
         label = (f"→ G{seg + 1}" if seg < num_gates else "post-last")
-        ax.plot(pos[mask, 0], pos[mask, 1], color=color, lw=1.8, label=label)
+        lbl   = label if label not in plotted_labels else "_nolegend_"
+        plotted_labels.add(label)
+        ax.plot(pos[start:end, 0], pos[start:end, 1], color=color, lw=1.8, label=lbl)
     ax.plot(pos[0, 0], pos[0, 1], "g^", ms=8, zorder=5, label="spawn")
     spawn_yaw = rpy[0, 2]   # yaw in radians at first recorded step
     _ARROW_LEN = 0.4
