@@ -1,2 +1,12 @@
 /venv
-/__pycache__
+__pycache__/
+*.pyc
+.DS_Store
+
+# Training and evaluation output (only best_model/best_model.zip is kept in git)
+checkpoints/
+historical_best_models/
+logs/
+eval_trajectories/
+*.zip
+!best_model/best_model.zip

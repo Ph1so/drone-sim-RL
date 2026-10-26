@@ -4,6 +4,29 @@ Autonomous drone racing environment built on `gym-pybullet-drones` + Gymnasium.
 Policy trained with PPO (stable-baselines3), following the Swift system architecture
 (Kaufmann et al., *Nature* 2023).
 
+Paper: [Champion-level drone racing using deep reinforcement learning](https://www.nature.com/articles/s41586-023-06419-4)
+
+---
+
+## Results
+
+![Chase-camera view of the trained policy flying one lap](docs/lap_chase.gif)
+
+| Path through the 5 gates | |
+|---|---|
+| ![Top-down path of one lap, colored by speed](docs/lap_topdown.png) | The policy in `best_model/best_model.zip` flies the 5-gate training course in **4.92 s**, reaching **9.4 m/s**, and passes every gate within 0.3 m of its center. |
+
+Evaluated with the same loop as `evaluate.py`, run headless (deterministic policy, start line spawn):
+
+| Setting | Episodes | Mean gates passed | Laps completed |
+|---|---|---|---|
+| Training course, no noise | 5 | 5.00 / 5 | 5 / 5 (4.92 s each) |
+| Training course, observation + dynamics noise on | 20 | 0.55 / 5 | 0 / 20 |
+| Unseen eval course, no noise | 5 | 1.00 / 5 | 0 / 5 |
+| Unseen eval course, noise on | 20 | 0.25 / 5 | 0 / 20 |
+
+**What this shows.** The policy learned a fast, clean lap on the course it trained on, but it does not yet hold up when the noise models (ROM and RDM, see below) are turned on or when the gates move to a new layout. It has mostly learned this one course. The next steps are keeping noise on through the whole curriculum (Swift trains with its residual models on, which is how its policy survives the jump to a real drone) and randomizing gate positions during training so the policy generalizes to new layouts.
+
 ---
 
 ## System Architecture
